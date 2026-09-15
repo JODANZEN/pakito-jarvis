@@ -1,0 +1,35 @@
+{
+  "_comment_1": "PATCH SNIPPET -- merge these keys into Jarvis's existing config.json, do not replace the whole file. Unlisted keys (db_path, active_profiles, tts_*, wake_word, whisper_model) stay as they are.",
+  "_comment_2": "ollama_base_url now points at the proxy (port 11435). The proxy forwards embeddings to your REAL Ollama on 11434, so keep Ollama running with `ollama pull nomic-embed-text`.",
+
+  "ollama_base_url": "http://127.0.0.1:11435",
+  "ollama_chat_model": "openai/gpt-oss-120b",
+  "ollama_embed_model": "nomic-embed-text",
+
+  "_comment_2a": "DEFAULT SWITCHED TO GROQ (FREE) 2026-07-06. GLM-5.2 is not free -- $1.40/$4.40 per M tokens, or $18/mo minimum flat plan. Groq's free tier (no credit card) hosts openai/gpt-oss-120b, an open model with real tool-calling support, on fast hardware. The proxy is provider-agnostic -- point it at Groq instead of Z.ai by setting env vars when you launch it: GLM_API_BASE=https://api.groq.com/openai/v1, GLM_MODEL=openai/gpt-oss-120b, GLM_API_KEY=<your groq key from console.groq.com>. No code changes needed. If you later want GLM-5.2's extra quality, just change these three env vars back to Z.ai's values and these three model fields to glm-5.2 -- nothing else changes.",
+
+  "_comment_2b": "Jarvis uses THREE separate model settings, not one. intent_judge_model and tool_router_model default to a small local model (gemma4:e2b) even after you change ollama_chat_model. The proxy forwards whatever model name Jarvis sends verbatim to the upstream API -- it does NOT override it -- so all three must match whatever model name your chosen provider expects.",
+  "intent_judge_model": "openai/gpt-oss-120b",
+  "tool_router_model": "openai/gpt-oss-120b",
+
+  "_comment_3": "Jarvis will show a dismissible 'unsupported model' warning -- that is expected, it is a soft allowlist, not a block.",
+
+  "_comment_4": "EDIT THE PATHS BELOW: replace C:/REPLACE/WITH/REAL/PATH/jarvis-setup with wherever you put these scripts. Forward slashes are fine on Windows. Confirmed against isair/jarvis source (settings_window.py): the top-level key is 'mcps', not 'mcp_servers'.",
+  "mcps": {
+    "ask_claude": {
+      "transport": "stdio",
+      "command": "python",
+      "args": ["C:/REPLACE/WITH/REAL/PATH/jarvis-setup/ask_claude_mcp.py"],
+      "env": {
+        "ANTHROPIC_API_KEY": "sk-ant-REPLACE-ME",
+        "CLAUDE_MODEL": "claude-opus-4-8"
+      }
+    },
+    "windows_launcher": {
+      "transport": "stdio",
+      "command": "python",
+      "args": ["C:/REPLACE/WITH/REAL/PATH/jarvis-setup/windows_launcher_mcp.py"],
+      "env": {}
+    }
+  }
+}

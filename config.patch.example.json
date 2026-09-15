@@ -1,0 +1,28 @@
+{
+  "_comment": "Merge these keys into Jarvis's existing config.json -- do not replace the whole file. Unlisted keys (db_path, active_profiles, tts_*, wake_word, whisper_model) stay as they are. Confirmed against isair/jarvis settings_window.py: the top-level key is 'mcps', not 'mcp_servers'.",
+
+  "_comment_models": "Only needed if you route Jarvis through ollama_glm_proxy.py. Point ollama_base_url at the proxy (11435); it forwards embeddings to real Ollama on 11434. Jarvis uses THREE separate model settings -- all must match whatever GLM_MODEL you launch the proxy with. Omit this whole block to keep Jarvis on its own local Ollama models.",
+  "ollama_base_url": "http://127.0.0.1:11435",
+  "ollama_chat_model": "",
+  "intent_judge_model": "",
+  "tool_router_model": "",
+  "ollama_embed_model": "nomic-embed-text",
+
+  "mcps": {
+    "ask_claude": {
+      "transport": "stdio",
+      "command": "python",
+      "args": ["/absolute/path/to/pakito-jarvis/ask_claude_mcp.py"],
+      "env": {
+        "ANTHROPIC_API_KEY": "",
+        "CLAUDE_MODEL": ""
+      }
+    },
+    "windows_launcher": {
+      "transport": "stdio",
+      "command": "python",
+      "args": ["/absolute/path/to/pakito-jarvis/windows_launcher_mcp.py"],
+      "env": {}
+    }
+  }
+}
