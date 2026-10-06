@@ -19,7 +19,7 @@ from .focus import FocusTrainer
 from .blocker import Blocker
 from .learner import Learner
 from .routines import Routines
-from .util import JsonlLog, file_uri, find_browser, make_launcher, make_notifier, now_iso
+from .util import JsonlLog, file_uri, launch_app_quietly, find_browser, make_launcher, make_notifier, now_iso
 
 SEED_ROUTINES = """# Routines
 
@@ -84,7 +84,7 @@ DEDUPE = {"open_url": "url", "open_app": "name", "play_music": "query", "web_sea
           "open_book": "book"}
 VERB = {"open_url": "opened", "open_app": "opened", "play_music": "music:", "web_search": "searched",
         "start_focus": "focus started", "stop_focus": "focus stopped", "run_routine": "routine",
-        "ask_claude": "asked Claude:", "save_routine": "saved routine", "search_flights": "flights to", "open_book": "opened book"}
+        "ask_claude": "asked Claude:", "save_routine": "saved routine", "search_flights": "flights to", "open_book": "opened book", "play_podcast": "podcast:"}
 
 
 def _target(name: str, args: dict) -> str:
@@ -130,7 +130,16 @@ class Hub:
                     print(f"Spotify API off: {e}")
         self._music_paused_by_us = False
         self.focus.listeners.append(self._music_follows_focus)
-        self.blocker = Blocker(self.focus, self.cfg["focus"].get("block_apps", []), self.notify)
+        relaunch_target = self.cfg["focus"].get("mute_relaunch")
+        self.blocker = Blocker(self.focus, self.cfg["focus"].get("block_apps", []), self.notify,
+                               mute=self.cfg["focus"].get("mute_apps", []),
+                               relaunch=(lambda: launch_app_quietly(relaunch_target)) if relaunch_target else None)
+        from .podcasts import Podcasts
+        heard = {(e.get("result") or {}).get("id") for e in self.events.read()
+                 if e.get("tool") in ("play_podcast", "podcast_heard") and e.get("ok")}
+        self.podcasts = Podcasts(self.cfg.get("podcasts", []), {h for h in heard if h}, clock=clock,
+                                 api_key=self.cfg.get("youtube_api_key"),
+                                 spotify=self.spotify.sp if self.spotify else None)
         self.claude = ClaudeBridge(self.cfg["claude"], self.dir, self.notify, clock=clock)
         self.conversations = JsonlLog(self.dir / "logs" / "conversations.jsonl")
         self.tools: dict[str, Tool] = {}
@@ -207,6 +216,8 @@ class Hub:
             a = e.get("args", {})
             what = a.get("url") or a.get("name") or a.get("query") or a.get("label") or a.get("question") \
                 or a.get("to") or a.get("book") or ""
+            if e["tool"] == "play_podcast":
+                what = (e.get("result") or {}).get("title", "")
             if e["tool"] == "open_book" and a.get("page"):
                 what = f"{what} p.{a['page']:g}"
             if e["tool"] == "open_url":
@@ -305,6 +316,37 @@ class Hub:
         def end_day():
             from .debrief import end_day as _end
             return _end(self)
+
+        @self.tool("podcast_options", "Pon un podcast: newest episodes he hasn't played from the creators he follows "
+                   "(Chris Williamson / Modern Wisdom, ZZEN Talks). Read the 2-3 titles and let him pick.",
+                   _obj({"creator": S}))
+        def podcast_options(creator: str | None = None):
+            return self.podcasts.options(creator)
+
+        @self.tool("play_podcast", "Play the episode he picked from podcast_options: a number (1-3) or words from the title. "
+                   "where = youtube or spotify (default from his settings).",
+                   _obj({"choice": S, "where": S}, ["choice"]))
+        def play_podcast(choice: str, where: str | None = None):
+            ep = self.podcasts.pick(choice)
+            if not ep:
+                return {"error": "Couldn't tell which one; call podcast_options first or say the number."}
+            where = (where or self.cfg.get("podcast_player", "youtube")).lower()
+            self.podcasts.heard.add(ep["id"])
+            if where == "spotify" and self.spotify:
+                r = self.spotify.play(ep["title"], "episode")
+                if "error" not in r:
+                    return {"id": ep["id"], "title": ep["title"], "show": ep["show"], "on": "spotify", **r}
+            self.launch(ep["url"])
+            return {"id": ep["id"], "title": ep["title"], "show": ep["show"], "on": "youtube"}
+
+        @self.tool("podcast_heard", "He already heard one of the offered episodes; don't offer it again.",
+                   _obj({"choice": S}, ["choice"]))
+        def podcast_heard(choice: str):
+            ep = self.podcasts.pick(choice)
+            if not ep:
+                return {"error": "Which one?"}
+            self.podcasts.heard.add(ep["id"])
+            return {"id": ep["id"], "title": ep["title"], "ok": True}
 
         @self.tool("search_flights", "Open Google Flights with a search filled in (busca vuelos). "
                    "Pass what he said: destination, and origin/dates/return if he gave them.",

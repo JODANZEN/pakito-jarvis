@@ -76,6 +76,19 @@ Then you can say:
 
 Spotify's rule since Feb 2026: developer apps only work if **the app owner has Premium**. Without Premium, Pakito still finds the exact playlist or song and opens it in Spotify, but you press play yourself.
 
+## Podcasts ("pon un podcast")
+Pakito finds the newest episodes you haven't played from Modern Wisdom (Chris Williamson) and ZZEN Talks and reads you 2–3 titles. You pick: "el segundo", or "the sleep one". It opens on YouTube, or on Spotify with `"podcast_player": "spotify"`.
+- "Ya lo escuché" marks an episode as heard, so it isn't offered again.
+- "Pon un podcast de ZZEN" offers only that show.
+- To add a creator, add an entry to `"podcasts"` in config: their YouTube `channel_id=UC...` or `playlist_id=PL...`, plus their name on Spotify.
+
+Where the episode list comes from, tried in order:
+1. YouTube's RSS feed. Free, but it has been down since 2026-10-04.
+2. The YouTube Data API. Also free: run `run-pakito.bat youtube` once to add a key.
+3. Spotify, which is already connected. It lists the shows' latest episodes and opens your pick as a YouTube search.
+
+"Haven't played" means you haven't opened it through Pakito. Pakito can't see your YouTube watch history.
+
 ## Textbooks
 `"books"` in config maps names to PDFs. Say "abre el Taylor" or "open Taylor page 161". Pages are the PDF's page numbers, not the book's printed ones. PDFs open in Opera GX, so jumping to a page works. Routines can use `- book: taylor` or `- book: taylor 161`.
 
@@ -86,11 +99,13 @@ The `lock in` routine, or saying "lock in", starts a focus block where the apps 
 
 To add more, use process names from Task Manager → Details (e.g. `"steam.exe"`, `"Discord.exe"`).
 
-**Websites too** (YouTube, Instagram, TikTok, X, Reddit, Netflix, Twitch, Facebook by default; edit `"block_sites"`). This needs the small Pakito extension in Opera GX, installed once:
+**Websites too** (Instagram, TikTok, X, Reddit, Netflix, Twitch and Facebook by default; edit `"block_sites"`). YouTube stays open because you use it for podcasts and learning. This needs the small Pakito extension in Opera GX, installed once:
 1. Go to `opera://extensions` and turn on **Developer mode** (top right).
 2. Click **Load unpacked** and pick the `browser-extension` folder in this repo.
 
 During a lock-in block, those sites show a 🔒 page with how long until your break, and each attempt counts as a distraction. Outside lock-in, or when Pakito isn't running, nothing is blocked. The extension only talks to Pakito on your own PC (`127.0.0.1:8765`).
+
+**Phone notifications go quiet:** during lock-in, Phone Link gets closed silently, so your S25's notifications stop popping up on the PC. This doesn't count as a distraction. Phone Link reopens when the break starts. To mute other apps too, add them to `"mute_apps"`, e.g. `"WhatsApp.exe"` or `"Discord.exe"`.
 
 **Music follows focus:** with Spotify connected, music pauses when a break starts and resumes when the next block starts. It only resumes if Pakito was the one that paused it. Turn this off with `"pause_music_on_break": false`.
 
@@ -113,7 +128,7 @@ Then say "ask Claude …", or Gemini decides to for hard questions. It runs in t
 Typed: `claude <question>`. It counts against your Claude plan's usage, and it isn't available on the free claude.ai plan.
 
 ## Tests
-`python -m pytest tests`: 57 tests. They use a fake clock and a fake Gemini session, so nothing launches and nothing hits the network.
+`python -m pytest tests`: 63 tests. They use a fake clock and a fake Gemini session, so nothing launches and nothing hits the network.
 
 ## Voice (Gemini Live)
 

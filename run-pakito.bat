@@ -13,6 +13,10 @@ if /i "%1"=="spotify" (
   "%PY%" -m assistant.spotify
   pause & exit /b
 )
+if /i "%1"=="youtube" (
+  "%PY%" -m assistant.podcasts
+  pause & exit /b
+)
 if "%GEMINI_API_KEY%"=="" (
   echo GEMINI_API_KEY isn't set in this window. Close it and open a new one after setx.
   pause & exit /b 1

@@ -25,6 +25,14 @@ DEFAULTS: dict = {
             "about": "Taylor, Classical Mechanics (PHY 310 textbook)",
         },
     },
+    # "Pon un podcast": newest unplayed episodes from these (YouTube RSS: channel_id=... or playlist_id=...).
+    "podcasts": [
+        {"name": "Modern Wisdom (Chris Williamson)", "feed": "channel_id=UCIaH-gZIVC432YRjNVvnyCA",
+         "spotify": "Modern Wisdom"},
+        {"name": "ZZEN Talks", "feed": "playlist_id=PLuQ93B3Cj_8CdUQbt5l1QZE7BoV7c-lZg", "spotify": "ZZEN Talks"},
+    ],
+    "youtube_api_key": None,          # optional; `run-pakito.bat youtube` — used while YouTube RSS is down
+    "podcast_player": "youtube",      # or "spotify" (plays the same episode there if Spotify has it)
     # Spotify Web API. Set by `run-pakito.bat spotify`. Without it, music opens Spotify's search page.
     "spotify": {"client_id": None},
     "apps": {
@@ -69,8 +77,12 @@ DEFAULTS: dict = {
         # Lock-in blocks close these if you open them (until the break). Process names from Task Manager > Details.
         "block_apps": ["Solitaire.exe"],
         # Lock-in blocks also block these sites in the browser (needs the Pakito extension, see README).
-        "block_sites": ["youtube.com", "instagram.com", "tiktok.com", "x.com", "twitter.com", "reddit.com",
+        "block_sites": ["instagram.com", "tiktok.com", "x.com", "twitter.com", "reddit.com",
                         "netflix.com", "twitch.tv", "facebook.com"],
+        # Closed quietly during lock-in (not counted as distractions) and reopened on the break.
+        # Phone Link = your phone's notifications on the PC.
+        "mute_apps": ["PhoneExperienceHost.exe", "YourPhone.exe"],
+        "mute_relaunch": r"shell:AppsFolder\Microsoft.YourPhone_8wekyb3d8bbwe!App",
         "pause_music_on_break": True,  # Spotify pauses when a break starts, resumes with the next block
     },
     "memory": {

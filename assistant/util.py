@@ -105,6 +105,12 @@ def file_uri(path: str, page: int | None = None) -> str:
     return uri + (f"#page={int(page)}" if page else "")
 
 
+def launch_app_quietly(target: str) -> None:
+    """Start a Store app by AUMID (shell:AppsFolder\\...) — used to bring Phone Link back after lock-in."""
+    if sys.platform == "win32":
+        subprocess.Popen(["explorer.exe", target])
+
+
 def launch(target: str) -> None:
     """Open a URL/URI with the default handler, or run a command (e.g. 'code')."""
     if target.startswith("file:") and "#" in target:

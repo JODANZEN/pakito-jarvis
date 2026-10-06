@@ -184,10 +184,11 @@ def test_blocker_kills_only_while_locked(env):
     hub.call("start_focus", {"label": "x"})       # normal block: still nothing
     assert b.check_once() == []
     hub.call("stop_focus")
-    hub.call("start_focus", {"label": "x", "lockin": True})
+    hub.focus.async_listeners = False
     clock.advance(3)
-    assert b.check_once() == ["solitaire.exe"] and killed == ["solitaire.exe"]
-    assert notes[-1][0].startswith("Locked in") and notes[-1][1] == "Solitaire is blocked. Break in 15 min."
+    hub.call("start_focus", {"label": "x", "lockin": True})     # lock-in start checks right away
+    assert killed == ["solitaire.exe"]
+    assert notes[-1][0].startswith("Locked in") and notes[-1][1] == "Solitaire is blocked. Break in 18 min."
     assert hub.focus.status()["distractions"] == 1   # counts as a distraction
 
 
@@ -582,14 +583,134 @@ def test_status_server(env):
                                      headers={"Content-Type": "application/json"}, method="POST")
         return _json.loads(urllib.request.urlopen(req).read())
     try:
-        assert get()["locked"] is False and "youtube.com" in get()["sites"]
-        assert post("youtube.com")["ok"] is False             # not locked: nothing counted
+        assert get()["locked"] is False and "instagram.com" in get()["sites"]
+        assert "youtube.com" not in get()["sites"]            # he uses YouTube for podcasts/learning
+        assert post("instagram.com")["ok"] is False           # not locked: nothing counted
         hub.call("start_focus", {"label": "study", "lockin": True})
         st = get()
         assert st["locked"] and st["label"] == "study" and st["remaining_min"] == 20
-        assert post("youtube.com")["counted"] is True
-        assert post("youtube.com")["counted"] is False        # duplicate report within 20 s
+        assert post("instagram.com")["counted"] is True
+        assert post("instagram.com")["counted"] is False      # duplicate report within 20 s
         assert hub.focus.status()["distractions"] == 1
-        assert notes[-1] == ("Locked in 🔒", "youtube.com is blocked. Break in 20 min.")
+        assert notes[-1] == ("Locked in 🔒", "instagram.com is blocked. Break in 20 min.")
     finally:
         srv.shutdown()
+
+
+# ---------------- Phone Link mute ----------------
+
+def test_phone_link_muted_during_lockin_and_back_on_break(env):
+    from assistant.blocker import Blocker
+    hub, clock, _, notes = env
+    hub.focus.async_listeners = False
+    running, killed, relaunched = {"phoneexperiencehost.exe"}, [], []
+    b = Blocker(hub.focus, [], hub.notify, lister=lambda: running, killer=killed.append,
+                mute=["PhoneExperienceHost.exe"], relaunch=lambda: relaunched.append(1))
+    hub.call("start_focus", {"label": "x"})                  # normal block: phone stays
+    assert killed == []
+    hub.call("stop_focus")
+    n_notes = len(notes)
+    hub.call("start_focus", {"label": "x", "lockin": True})
+    assert killed == ["phoneexperiencehost.exe"]
+    assert hub.focus.status()["distractions"] == 0           # muting isn't a distraction
+    assert not any(t.startswith("Locked in") for t, _ in notes[n_notes:])
+    clock.advance(20)
+    FakeTimer.fire_last()                                     # break -> Phone Link comes back
+    assert relaunched == [1]
+
+
+# ---------------- podcasts ----------------
+
+FEED = """<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns:yt="http://www.youtube.com/xml/schemas/2015" xmlns="http://www.w3.org/2005/Atom">
+ <entry><id>yt:video:AAA</id><yt:videoId>AAA</yt:videoId><title>Why Men Feel Lost - Dr X</title>
+  <link rel="alternate" href="https://www.youtube.com/watch?v=AAA"/><published>2026-10-04T12:00:00+00:00</published></entry>
+ <entry><id>yt:video:SSS</id><yt:videoId>SSS</yt:videoId><title>Quick tip #shorts</title>
+  <link rel="alternate" href="https://www.youtube.com/shorts/SSS"/><published>2026-10-05T12:00:00+00:00</published></entry>
+ <entry><id>yt:video:BBB</id><yt:videoId>BBB</yt:videoId><title>The Science Of Sleep - Prof Y</title>
+  <link rel="alternate" href="https://www.youtube.com/watch?v=BBB"/><published>2026-10-01T12:00:00+00:00</published></entry>
+</feed>"""
+
+ZZEN = FEED.replace("AAA", "ZZ1").replace("BBB", "ZZ2").replace("Why Men Feel Lost - Dr X", "Nootrópicos y enfoque") \
+    .replace("The Science Of Sleep - Prof Y", "Dopamina").replace("2026-10-04", "2026-10-03").replace("2026-10-01", "2026-10-02")
+
+
+def podcast_hub(env):
+    hub, clock, launched, _ = env
+    clock.t = 1791300000.0                                    # 2026-10-06
+    hub.podcasts.fetcher = lambda feed: ZZEN if "playlist_id" in feed else FEED
+    hub.podcasts.clock = clock
+    return hub, clock, launched
+
+
+def test_podcast_options_mix_shows_skip_shorts(env):
+    hub, clock, launched = podcast_hub(env)
+    r = hub.call("podcast_options")
+    titles = [o["title"] for o in r["options"]]
+    assert titles == ["Why Men Feel Lost - Dr X", "Nootrópicos y enfoque", "Dopamina"]  # newest of each show first
+    assert "#shorts" not in " ".join(titles)
+    assert r["options"][0]["when"] == "2 days ago"   # Oct 4 noon -> Oct 6 evening
+    assert hub.call("podcast_options", {"creator": "zzen"})["options"][0]["show"] == "ZZEN Talks"
+
+
+def test_play_podcast_by_number_or_words_and_not_offered_again(env):
+    hub, clock, launched = podcast_hub(env)
+    hub.call("podcast_options")
+    r = hub.call("play_podcast", {"choice": "2"})
+    assert r["title"] == "Nootrópicos y enfoque" and launched[-1] == "https://www.youtube.com/watch?v=ZZ1"
+    hub.call("podcast_options")
+    r = hub.call("play_podcast", {"choice": "the sleep one"})
+    assert r["title"] == "The Science Of Sleep - Prof Y"
+    hub.call("podcast_options")
+    hub.call("podcast_heard", {"choice": "1"})
+    left = [o["title"] for o in hub.call("podcast_options")["options"]]
+    assert left == ["Dopamina"]
+    # remembered across restarts (from the event log)
+    hub2 = Hub(hub.cfg, launcher=lambda x: None, notifier=lambda *a: None, clock=clock, timer_factory=FakeTimer)
+    assert {"ZZ1", "BBB", "AAA"} <= hub2.podcasts.heard
+    assert any("podcast: Nootrópicos" in l for l in hub.recent(hours=24))
+
+
+def test_podcast_feed_down_is_reported(env):
+    hub, clock, launched = podcast_hub(env)
+    def boom(feed):
+        if "playlist_id" in feed:
+            raise OSError("timeout")
+        return FEED
+    hub.podcasts.fetcher = boom
+    r = hub.call("podcast_options")
+    assert len(r["options"]) == 2 and "ZZEN Talks" in r["couldnt_check"][0]
+
+
+def test_podcasts_fall_back_to_api_then_spotify(env):
+    from assistant.podcasts import Podcasts
+    hub, clock, launched = podcast_hub(env)
+    def rss_down(feed):
+        raise OSError("HTTP Error 404")
+    api_calls, sp_calls = [], []
+    def api(show, key):
+        api_calls.append(show["name"])
+        if show["name"] == "ZZEN Talks":
+            raise OSError("quota")
+        return [{"id": "API1", "title": "From API", "show": show["name"], "published": "2026-10-05T00:00:00Z",
+                 "url": "https://www.youtube.com/watch?v=API1"}]
+    def sp_eps(show, sp):
+        sp_calls.append(show["name"])
+        return [{"id": "sp:E1", "title": "From Spotify", "show": show["name"], "published": "2026-10-04T12:00:00+00:00",
+                 "url": "https://www.youtube.com/results?search_query=From+Spotify", "spotify_uri": "spotify:episode:E1"}]
+    hub.podcasts = Podcasts(hub.cfg["podcasts"], set(), fetcher=rss_down, clock=clock,
+                            api_key="k", spotify=object(), api=api, sp_eps=sp_eps)
+    titles = [o["title"] for o in hub.call("podcast_options")["options"]]
+    assert titles == ["From API", "From Spotify"]
+    assert sp_calls == ["ZZEN Talks"]                     # spotify only where the API failed
+    hub.call("play_podcast", {"choice": "2"})
+    assert launched[-1].startswith("https://www.youtube.com/results?search_query=From")
+
+
+def test_podcasts_all_sources_down(env):
+    from assistant.podcasts import Podcasts
+    hub, clock, _ = podcast_hub(env)
+    hub.podcasts = Podcasts(hub.cfg["podcasts"], set(), fetcher=lambda f: (_ for _ in ()).throw(OSError("404")),
+                            clock=clock)
+    r = hub.call("podcast_options")
+    assert r["options"] == [] and len(r["couldnt_check"]) == 2 and "rss" in r["couldnt_check"][0]

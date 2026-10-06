@@ -30,7 +30,8 @@ def kill_process(name: str) -> None:
 
 class Blocker:
     def __init__(self, focus, apps: list[str], notify: Callable[[str, str], None],
-                 lister=list_processes, killer=kill_process, interval: float = 3.0):
+                 lister=list_processes, killer=kill_process, interval: float = 3.0,
+                 mute: list[str] | None = None, relaunch: Callable[[], None] | None = None):
         self.focus = focus
         self.apps = [a.lower() for a in apps]
         self.pretty = {a.lower(): a.removesuffix(".exe").removesuffix(".EXE") for a in apps}
@@ -38,11 +39,31 @@ class Blocker:
         self.lister, self.killer, self.interval = lister, killer, interval
         self._stop = threading.Event()
         self.blocked_count = 0
+        # mute = quietly closed during lock-in (e.g. Phone Link, so phone notifications stop), NOT a distraction
+        self.mute = [a.lower() for a in (mute or [])]
+        self.relaunch = relaunch
+        self.muted_now = False
+        focus.listeners.append(self.on_phase)
+
+    def on_phase(self, phase: str) -> None:
+        if phase == "focus" and self.focus.locked:
+            self.check_once()
+        elif phase != "focus" and self.muted_now:          # break or done: bring notifications back
+            self.muted_now = False
+            if self.relaunch:
+                try:
+                    self.relaunch()
+                except Exception:
+                    pass
 
     def check_once(self) -> list[str]:
-        if not self.apps or not self.focus.locked:
+        if not (self.apps or self.mute) or not self.focus.locked:
             return []
         running = self.lister()
+        for app in self.mute:
+            if app in running:
+                self.killer(app)
+                self.muted_now = True
         hits = [a for a in self.apps if a in running]
         for app in hits:
             self.killer(app)
