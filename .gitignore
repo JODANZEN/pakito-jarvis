@@ -20,3 +20,8 @@ Thumbs.db
 desktop.ini
 .vscode/
 .idea/
+
+# Pakito assistant local settings
+assistant/config.local.json
+.pytest_cache/
+assistant/.spotify_cache

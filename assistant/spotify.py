@@ -1,0 +1,170 @@
+"""Real Spotify control through the Web API (spotipy, PKCE login — no client secret).
+
+Setup once:  run-pakito.bat spotify
+  1. developer.spotify.com/dashboard → Create app → Redirect URI: http://127.0.0.1:8888/callback
+     → tick "Web API" → Save → copy the Client ID.
+  2. Paste it when asked. A browser tab opens to log in; after that it's remembered.
+
+Spotify rule (Feb 2026): developer-mode apps only work if the app owner has Premium.
+Without Premium, search still works (Pakito opens the exact playlist/song) but it can't press play.
+"""
+from __future__ import annotations
+
+import time
+import urllib.parse
+from difflib import SequenceMatcher
+from pathlib import Path
+from typing import Callable
+
+SCOPES = "user-modify-playback-state user-read-playback-state user-read-currently-playing playlist-read-private"
+REDIRECT = "http://127.0.0.1:8888/callback"
+CACHE = Path(__file__).with_name(".spotify_cache")          # gitignored; stays out of the synced vault
+KINDS = {"playlist": "playlist", "track": "track", "song": "track", "artist": "artist", "album": "album",
+         "podcast": "show", "show": "show", "episode": "episode"}
+
+
+def make_client(client_id: str, open_browser: bool = True):
+    import spotipy
+    from spotipy.oauth2 import SpotifyPKCE
+
+    auth = SpotifyPKCE(client_id=client_id, redirect_uri=REDIRECT, scope=SCOPES,
+                       cache_path=str(CACHE), open_browser=open_browser)
+    return spotipy.Spotify(auth_manager=auth, requests_timeout=8)
+
+
+class SpotifyControl:
+    def __init__(self, sp, launch: Callable[[str], None], sleep=time.sleep):
+        self.sp = sp
+        self.launch = launch
+        self.sleep = sleep
+
+    # ---- finding things ----
+    def _own_playlist(self, query: str):
+        q = query.lower()
+        best, score = None, 0.0
+        for p in (self.sp.current_user_playlists(limit=50) or {}).get("items", []) or []:
+            if not p:
+                continue
+            name = (p.get("name") or "").lower()
+            s = SequenceMatcher(None, q, name).ratio()
+            if q in name or name in q:
+                s = max(s, 0.9)
+            if s > score:
+                best, score = p, s
+        return best if score >= 0.75 else None
+
+    def find(self, query: str, kind: str = "playlist") -> dict | None:
+        """-> {'uri', 'name', 'type'} for the best match. Your own playlists win for playlist searches."""
+        kind = KINDS.get((kind or "playlist").lower(), "playlist")
+        if kind == "playlist":
+            mine = self._own_playlist(query)
+            if mine:
+                return {"uri": mine["uri"], "name": mine["name"], "type": "playlist", "yours": True}
+        res = self.sp.search(q=query, limit=5, type=kind)
+        items = [i for i in (res.get(f"{kind}s") or {}).get("items", []) if i]
+        if not items:
+            return None
+        top = items[0]
+        out = {"uri": top["uri"], "name": top.get("name"), "type": kind}
+        if kind == "track":
+            out["by"] = ", ".join(a["name"] for a in top.get("artists", []))
+        return out
+
+    # ---- devices ----
+    def _device(self) -> str | None:
+        devs = (self.sp.devices() or {}).get("devices", [])
+        active = [d for d in devs if d.get("is_active")]
+        pick = active or [d for d in devs if d.get("type") == "Computer"] or devs
+        return pick[0]["id"] if pick else None
+
+    def _ensure_device(self) -> str | None:
+        dev = self._device()
+        if dev:
+            return dev
+        self.launch("spotify:")                    # open the desktop app, then wait for it to show up
+        for _ in range(10):
+            self.sleep(1)
+            dev = self._device()
+            if dev:
+                return dev
+        return None
+
+    # ---- actions ----
+    def play(self, query: str, kind: str = "playlist") -> dict:
+        hit = self.find(query, kind)
+        if not hit:
+            return {"error": f"Nothing on Spotify for '{query}'."}
+        try:
+            dev = self._ensure_device()
+            if not dev:
+                raise RuntimeError("no device")
+            if hit["type"] in ("track", "episode"):
+                self.sp.start_playback(device_id=dev, uris=[hit["uri"]])
+            else:
+                self.sp.start_playback(device_id=dev, context_uri=hit["uri"])
+            return {"playing": hit}
+        except Exception as e:
+            # no Premium / no device: at least open the exact thing in the app
+            self.launch(hit["uri"])
+            return {"opened": hit, "note": f"Opened in Spotify but couldn't start playback ({str(e)[:80]}). "
+                                           "Starting playback needs Premium."}
+
+    def control(self, action: str, volume: float | None = None) -> dict:
+        sp = self.sp
+        action = action.lower()
+        if action in ("now_playing", "what", "status"):
+            cur = sp.current_playback() or {}
+            item = cur.get("item") or {}
+            if not item:
+                return {"playing": None}
+            by = ", ".join(a["name"] for a in item.get("artists", [])) or (item.get("show") or {}).get("name")
+            return {"playing": item.get("name"), "by": by, "is_playing": cur.get("is_playing"),
+                    "volume": (cur.get("device") or {}).get("volume_percent")}
+        dev = self._device()
+        if action == "pause":
+            sp.pause_playback(device_id=dev)
+        elif action in ("resume", "play"):
+            sp.start_playback(device_id=dev)
+        elif action in ("next", "skip"):
+            sp.next_track(device_id=dev)
+        elif action in ("previous", "back"):
+            sp.previous_track(device_id=dev)
+        elif action in ("volume", "volume_up", "volume_down"):
+            cur = ((sp.current_playback() or {}).get("device") or {}).get("volume_percent", 50)
+            if volume is None:
+                volume = cur + (15 if action == "volume_up" else -15)
+            volume = int(max(0, min(100, volume)))
+            sp.volume(volume, device_id=dev)
+            return {"ok": True, "volume": volume}
+        else:
+            return {"error": f"unknown action {action}"}
+        return {"ok": True, "action": action}
+
+
+def search_uri(query: str) -> str:
+    return "spotify:search:" + urllib.parse.quote(query)
+
+
+def setup() -> None:
+    """run-pakito.bat spotify"""
+    import json
+
+    local = Path(__file__).with_name("config.local.json")
+    cfg = json.loads(local.read_text(encoding="utf-8")) if local.exists() else {}
+    print(__doc__)
+    cid = input("Client ID: ").strip()
+    if not cid:
+        return
+    cfg.setdefault("spotify", {})["client_id"] = cid
+    local.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+    sp = make_client(cid)
+    me = sp.current_user()
+    print(f"\n✅ Logged in as {me.get('display_name')} ({me.get('product', '?')} account)")
+    if me.get("product") and me.get("product") != "premium":
+        print("   Not Premium: Pakito can find and open exact playlists/songs, but can't press play/pause.")
+    devs = sp.devices().get("devices", [])
+    print(f"   Devices Spotify sees right now: {[d['name'] for d in devs] or 'none (open the Spotify app)'}")
+
+
+if __name__ == "__main__":
+    setup()

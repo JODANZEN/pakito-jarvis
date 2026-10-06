@@ -1,0 +1,9 @@
+{
+  "manifest_version": 3,
+  "name": "Pakito Lock-in",
+  "version": "1.0",
+  "description": "Blocks distracting sites while a Pakito lock-in focus block is running.",
+  "permissions": ["tabs", "webNavigation", "alarms"],
+  "host_permissions": ["http://127.0.0.1:8765/*"],
+  "background": { "service_worker": "background.js" }
+}
