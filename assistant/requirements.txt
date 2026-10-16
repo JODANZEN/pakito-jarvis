@@ -6,3 +6,4 @@ matplotlib>=3.8
 pytest>=8
 ddgs>=9
 spotipy>=2.25
+Pillow>=10

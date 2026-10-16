@@ -20,6 +20,7 @@ status · stats [days]
 open <url> · app <name> · music <query> · search <query>
 claude <question>     ask Claude (answer arrives as a notification + in the vault)
 recent                what Pakito did in the last 2 h
+tasks · add <task> · did <task>   task list (Assistant/Tasks.md)
 today                 how today is going · debrief = end the day (stops block, pauses music, saves the note)
 routines              list routines
 suggest               routines it thinks you should save
@@ -42,6 +43,24 @@ def parse_focus(rest: str) -> dict:
         except ValueError:
             pass
     return {"label": rest or None}
+
+
+def unlock_free_mode(hub: Hub) -> None:
+    """Typed only, never by voice: unlocks free mode for ONE job in the next 10 min."""
+    import getpass
+    from .builds import PASS_FILE, UNLOCK_MIN, set_passphrase
+    if not PASS_FILE.exists():
+        print("No free-mode passphrase yet. Pick one (it's stored only as a salted hash on this PC).")
+        a, b = getpass.getpass("New passphrase: "), getpass.getpass("Again: ")
+        if not a or a != b:
+            print("They didn't match. Nothing saved.")
+            return
+        set_passphrase(a)
+        print("Saved.")
+    if hub.builds.unlock(getpass.getpass("Passphrase: "), hub.clock()):
+        print(f"🔓 Free mode unlocked for one job in the next {UNLOCK_MIN} min. Say: \"modo libre en <proyecto>: <tarea>\".")
+    else:
+        print("Wrong passphrase. Still locked.")
 
 
 def handle(hub: Hub, line: str) -> bool:
@@ -74,12 +93,25 @@ def handle(hub: Hub, line: str) -> bool:
         show(c("open_url", {"url": rest}))
     elif cmd == "app" and rest:
         show(c("open_app", {"name": rest}))
+    elif cmd == "cc":
+        show(c("open_claude_code", {"project": rest} if rest else {}))
     elif cmd == "music" and rest:
         show(c("play_music", {"query": rest}))
     elif cmd == "search" and rest:
         show(c("web_search", {"query": rest}))
     elif cmd == "claude" and rest:
         show(c("ask_claude", {"question": rest}))
+    elif cmd == "jobs":
+        show(c("claude_jobs", {"job": rest} if rest else {}))
+    elif cmd == "libre":
+        unlock_free_mode(hub)
+    elif cmd == "tasks":
+        t = c("tasks")
+        print("open: " + ("; ".join(t["open"]) or "nothing") + "\ndone today: " + ("; ".join(t["done_today"]) or "nothing"))
+    elif cmd == "add" and rest:
+        show(c("add_task", {"task": rest}))
+    elif cmd == "did" and rest:
+        show(c("complete_task", {"task": rest}))
     elif cmd == "today":
         print(c("day_summary")["spoken"])
     elif cmd == "debrief":

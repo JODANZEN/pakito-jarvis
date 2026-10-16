@@ -30,6 +30,13 @@ DEFAULTS: dict = {
         {"name": "Modern Wisdom (Chris Williamson)", "feed": "channel_id=UCIaH-gZIVC432YRjNVvnyCA",
          "spotify": "Modern Wisdom"},
         {"name": "ZZEN Talks", "feed": "playlist_id=PLuQ93B3Cj_8CdUQbt5l1QZE7BoV7c-lZg", "spotify": "ZZEN Talks"},
+        {"name": "Dr K (HealthyGamerGG)", "feed": "channel_id=UClHVl2N3jPEbkNJVx-ItQIQ", "spotify": "HealthyGamerGG"},
+        {"name": "Joe Rogan Experience", "feed": "channel_id=UCzQUP1qoWDoEbmsQxvdjxgQ",
+         "spotify": "The Joe Rogan Experience"},
+        {"name": "Diary of a CEO", "feed": "channel_id=UCGq-a57w-aPwyi3pW7XLiHw", "spotify": "The Diary Of A CEO"},
+        {"name": "Jordan B Peterson", "feed": "channel_id=UCL_f53ZEJxp8TtlOkHwMV9Q",
+         "spotify": "The Jordan B. Peterson Podcast"},
+        {"name": "Johnathan Bi", "feed": "channel_id=UCCrl9a26fDCZvofnCnA5A8g", "spotify": "Johnathan Bi"},
     ],
     "youtube_api_key": None,          # optional; `run-pakito.bat youtube` — used while YouTube RSS is down
     "podcast_player": "youtube",      # or "spotify" (plays the same episode there if Spotify has it)
@@ -49,7 +56,7 @@ DEFAULTS: dict = {
         "gmail": "https://mail.google.com",
         "calendar": "https://calendar.google.com",
         "whatsapp": "whatsapp:",
-        "claude": "https://claude.ai",
+        "claude": "app:Claude|https://claude.ai",   # desktop app if installed, else the website
         "chatgpt": "https://chatgpt.com",
         "chat gpt": "https://chatgpt.com",
         "chat": "https://chatgpt.com",
@@ -95,6 +102,21 @@ DEFAULTS: dict = {
         "model": None,                # e.g. "sonnet" for faster answers; None = Claude Code's default
         "timeout_sec": 180,
         "allowed_tools": "WebSearch,WebFetch",
+        "projects_dir": "~/source/repos",   # "abre Claude Code en <proyecto>" looks for <proyecto> here
+        "build_timeout_min": 20,      # a background build gets this long, then stops (its commits stay on the branch)
+        "build_max_turns": 80,
+    },
+    "calendar": {
+        "feeds": [],                  # set by `run-pakito.bat calendar`: [{"label", "role", "url"}] (secret links!)
+        "refresh_min": 30,
+        "lookahead_days": 10,         # how far ahead "coming up" looks for exams/projects
+    },
+    "pet": {
+        "enabled": True,              # Pakibot, the on-screen pet (assistant/pet.py)
+        "mode": "popin",              # popin = only while talking, stay = always on screen, off = hidden
+        "linger_sec": 10,             # pop-in: how long it stays after the conversation goes quiet
+        "daily_goal_min": 120,        # focused minutes that fill its chest bar
+        "scale": 3,                   # 3 = 144 px tall robot
     },
     "learner": {
         "repeat_threshold": 3,        # same request -> same actions this many times -> suggest a routine

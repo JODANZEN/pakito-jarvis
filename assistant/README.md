@@ -60,6 +60,24 @@ Run `install-startup.bat` once. Pakito then opens minimized every time you log i
 - **"How's my day going?":** the same numbers, but nothing stops.
 - Typed: `today` · `debrief`
 
+## Tasks
+`Assistant/Tasks.md` in your vault is an Obsidian checklist that Pakito keeps:
+- "Anota que tengo que…" adds a task.
+- "Ya terminé…" ticks one off.
+- "¿Qué tenemos para hoy?" reads the list.
+
+Ticking a box in Obsidian works too. This is temporary: it moves to Google Tasks so your phone has it (see ROADMAP).
+
+## Spoken debrief + Examen
+Say **"terminé"** and Pakito:
+1. Reads your focus stats.
+2. Asks what you got done and what's still open, then updates the task list. Open items carry over to tomorrow.
+3. Offers the **Examen**: the five Ignatian questions, one at a time. It just listens and saves your answers.
+
+Everything lands in `Assistant/Days/<date>.md`: stats, done, still open, notes, Examen. Change the Examen wording with `"examen": [...]` in `config.local.json`.
+
+Privacy: whatever you say goes through Gemini's free tier, and Google may use free-tier content to improve its products. Keep that in mind for the Examen. ROADMAP has the local-only option.
+
 ## Browser
 Web links open in **Opera GX** if it's installed (`"browser": "auto"`), so you're already logged in everywhere. Set `"browser": "default"` for the Windows default, or give the full path to any browser's .exe. Pakito's startup line shows which one it found.
 
@@ -115,6 +133,121 @@ During a lock-in block, those sites show a 🔒 page with how long until your br
 - Typed: `recent`. What you said in each conversation goes to `logs/conversations.jsonl`.
 - Tune it under `"memory"` in `config.local.json`.
 
+## Opening apps + Claude Code
+- **"Abre Claude"** opens the Claude desktop app. If the app isn't installed, it opens claude.ai instead.
+- **"Abre <any app>"** works for anything in your Start menu: Discord, Teams, Blender… Pakito asks Windows for its installed-app list once at startup.
+- **"Abre Claude Code"** / **"Claude en la terminal"** opens a new terminal window running `claude` in `source\repos`.
+  - **"…en pakito"** / **"…en rabbit hole"** opens it inside that project folder (fuzzy match).
+  - **"…donde lo dejé"** continues your last session there (`claude --continue`).
+  - Change the folder with `"claude": {"projects_dir": "..."}`.
+- Typed: `cc` or `cc pakito`.
+
+## Pakito as an MCP server (other brains can use Pakito)
+Claude Code, the Claude desktop app and later Hermes can use Pakito's tools: add a task, start a focus block, check your stats, open things on your PC.
+- **Setup:** run `run-pakito.bat mcp` once. In Claude Code, Pakito's tools show up as `mcp__pakito__*`. For the desktop app, the command prints a snippet to paste into its config.
+- **One Pakito, not two.** The MCP server is a thin relay to the Pakito that's already running, so whoever asks, there's one focus timer, one task list and one log. Every action shows up in `events.jsonl` with `"source": "mcp"`. If Pakito isn't running, the tools say so instead of doing anything.
+- **Security:**
+  - The relay talks to Pakito on `127.0.0.1:8765` with a secret token from `assistant/.pakito_token`. It's created on first start and is gitignored.
+  - Browser requests are refused, so a website can't make Pakito do things.
+- **Voice-only tools:** `ask_claude` and `open_claude_code` can't be used through MCP, so an agent can't start more agents.
+
+## Dictation: hold Ctrl+Win, talk, let go
+Works like Wispr Flow, anywhere you can type: WhatsApp, Canvas, VS Code, email.
+- **Use:** hold **Ctrl+Win**, talk, and let go. Cleaned-up text appears where your cursor is, usually 1–2 s later.
+- **What the cleanup does:**
+  - punctuation, capitalization and accents;
+  - removes filler ("eh", "o sea");
+  - applies self-corrections ("a las 5, no, mejor a las 6" → "a las 6");
+  - honors "nueva línea".
+- **Language:** your Spanish/English mix stays exactly as you said it; it never translates.
+- **Context:** it knows which app you're typing into, so it's casual in chats and keeps code literal in editors.
+- **It stays silent for shortcuts:** Ctrl+Win+D, Ctrl+Win+arrows and so on never trigger it, and a quick tap does nothing.
+- **"Escribe por mí que…"** when talking to Pakito normally: Gemini writes the message and types it into the window you're in. You press send.
+- **Privacy:**
+  - The audio goes to Gemini (free tier) and is dropped.
+  - Logs keep only "dictated 7 s, 120 chars", never the text.
+  - Off during calls.
+- **Settings** (in `"voice"`):
+  - `"dictation_hotkey"`;
+  - `"vocabulary": ["Botana", "RKKY"]` for words it should spell right;
+  - `"dictation": false` to turn it off.
+- **First time:** run `run-pakito.bat check dictation` to pick the model.
+
+## Your calendar: what's coming
+Pakito reads your Google Calendar: exams (🔴), study blocks (📚), classes, work, and Canvas projects. It's the same calendar your Saturday brief and sync-brain keep up to date, so both always agree.
+- **Ask:** "¿qué tengo hoy?", "¿qué viene esta semana?", "¿qué exámenes vienen?". "¿Qué hay que entregar?" includes Canvas assignments, but only when you ask.
+- **Every conversation** starts with a short "coming up" list: what's left today, plus exams and projects in the next 10 days. If one is today or tomorrow, Pakito mentions it once.
+- **Setup:** run `run-pakito.bat calendar` and paste each calendar's private link. In Google Calendar, go to ⚙ Settings → the calendar → Integrate calendar → **Secret address in iCal format**. For Canvas, use its Calendar Feed link.
+- **The links are secret.** They're stored only in `config.local.json`, which isn't committed.
+- **Refresh and offline:** Pakito refreshes every 30 min and keeps a cached copy, so it still works offline.
+
+## "Mira esto": Pakito looks at your screen
+Ask about what's in front of you: "¿qué es esto?", "explícame esta ecuación", "what's this error". Pakito takes **one** screenshot and answers out loud.
+- **What it captures:**
+  - the window in front (default);
+  - "mira la pantalla" captures the whole monitor;
+  - "mira esta parte" lets you drag a box around just the equation or paragraph (Esc cancels).
+- **"Explícamelo bien / paso a paso":** Gemini gives you the quick version now, and Claude works through it properly in the background, saving the result to `Assistant/Claude/`.
+- **Privacy:**
+  - Only when you ask. Nothing is recorded, and nothing is logged except the window title.
+  - The image goes to Gemini for that conversation and is dropped. Claude's copy is deleted the moment it finishes.
+  - Free tier: Google may use what you send to improve its products.
+- **Guards:**
+  - It won't screenshot during a call, or when a password manager or Windows security prompt is in front.
+  - Pakibot hides for the shot.
+  - Agents using Pakito over MCP can't take screenshots.
+- **Check it works with your model:** `run-pakito.bat check look`.
+
+## Pakibot (the on-screen pet)
+A little pixel robot that shows what Pakito is doing. Voice mode starts it automatically.
+- **States:**
+  - listening: big eyes, and his mouth is your live mic level, so you can see the mic hears you;
+  - thinking: loading bar, plus a note while a tool runs;
+  - talking: mouth follows the voice, and the speech bubble shows the live transcript;
+  - focus: a real mm:ss countdown on his face and a progress bar;
+  - break: naps with the break timer;
+  - streak: happy when a block finishes or a Claude job is done.
+- **Chest bar:** today's focused minutes toward `"daily_goal_min"` (default 120).
+- **Three modes, by voice or right-click:**
+  - **"Modo pop-in" / "aparece":** shows up while you talk, then fades out ~10 s later. It also pops in for news, and stays during lock-in.
+  - **"Quédate":** always on screen. Shows the clock now and then.
+  - **"Desaparece":** hidden until you call it back.
+- **Always hidden during calls,** so it never shows in a screen share.
+- **Moving it:** drag it anywhere and the position is remembered. It never takes keyboard focus and has no taskbar button.
+- **Its own process:** if it crashes, voice keeps working. If Pakito quits, it closes itself. Run it alone with `python -m assistant.pet`.
+- **Test it without Pakito or Gemini:** `run-pakito.bat pet` loops through every state. Drag him around; right-click → Hide to quit.
+- **Cost:** about 1 ms to draw a frame, and unchanged frames are skipped. Measured on a virtual display: ~3% of one CPU core idle, ~8% while talking, near 0 when hidden.
+- **Settings:** `"pet": {"enabled", "mode", "linger_sec", "daily_goal_min", "scale"}` in `config.local.json`. Change the art in `assistant/pet.py`; `pet/mockup.html` is the original sketch.
+
+## Build jobs: Claude codes while you do something else
+Say "haz que Claude agregue un settings page en RabbitHole". Claude Code works in the background and Pakito tells you when it's ready.
+
+**Safety layers:**
+1. **Its own copy.** Each job gets a separate folder (a git worktree, in `source\repos\.pakito-worktrees`) on a new `pakito/...` branch. Your checkout and branches are never touched.
+2. **A reviewer.** Claude Code's auto mode has a second model check every action before it runs. It blocks anything beyond the task, or anything steered by hostile text it read; blocked actions are skipped and listed in your review. Needs Claude Code 2.1.281 or newer (`claude update`). Pakito refuses to start a build on older versions.
+3. **Hard rules.** Push, switching branches, merging, resets and git config are denied outright, in every mode.
+4. **You decide.** Nothing reaches your branch or GitHub until you say so.
+
+**Review flow:**
+- **"Revisa lo de RabbitHole"** opens the review in VS Code:
+  - Claude's summary;
+  - every command it ran and every file it edited, recorded from Claude Code itself;
+  - what got blocked;
+  - the full diff.
+- **"Apruébalo"** merges it into your current branch, locally only. It refuses if you have uncommitted work there.
+- **"Dile que también…"** sends a follow-up to the same Claude session on the same branch.
+- **"Descártalo"** deletes the branch and the folder.
+- **"Súbelo"** pushes, and only after it asks you and you say yes.
+- **"¿Cómo va lo de X?"** gives job status. Typed: `jobs`.
+- Reviews are saved in `Assistant/Builds/` in your vault, and every job is in `state/jobs.json`.
+
+**Modo libre** (no reviewer, for local jobs you trust):
+- **Unlock:** type `libre` in Pakito's console, then your passphrase. The first time, it asks you to create one; it's stored only as a salted hash in `assistant/.free_mode`. Saying it out loud doesn't count.
+- **Use:** within 10 minutes, say "modo libre en RabbitHole: …". Claude Code opens in a **visible window** with no permission checks, on its own branch, with the hard rules still on. Watch it, and close the window to stop it.
+- **One job per unlock.** Then review, approve or discard like any build.
+
+Agents using Pakito over MCP can't start builds, approve, discard or push. Those stay your calls.
+
 ## Ask Claude (uses your Claude plan via Claude Code, no API key)
 1. PowerShell: `irm https://claude.ai/install.ps1 | iex`
 2. Open a new terminal, run `claude`, log in in the browser, then `/exit`.
@@ -128,7 +261,7 @@ Then say "ask Claude …", or Gemini decides to for hard questions. It runs in t
 Typed: `claude <question>`. It counts against your Claude plan's usage, and it isn't available on the free claude.ai plan.
 
 ## Tests
-`python -m pytest tests`: 63 tests. They use a fake clock and a fake Gemini session, so nothing launches and nothing hits the network.
+`python -m pytest tests`: 138 tests. They use a fake clock and a fake Gemini session, so nothing launches and nothing hits the network.
 
 ## Voice (Gemini Live)
 
@@ -141,11 +274,20 @@ python -m assistant.voice
 - **Hold Ctrl+Alt and talk, then release** (push-to-talk). The first hold opens the conversation (rising beep). After that it stays open about 60 s for follow-ups, so the next hold is instant.
 - **Hold it while Pakito is talking** to cut it off. **Tap it** to hang up. Saying "that's all" / "gracias" also hangs up.
 - The mic only sends while the key is held, so there's no echo problem on laptop speakers.
+- **Sounds:** a high tick the moment you press means the mic is on. A lower tick when you let go means it was sent. A falling two-tone means the conversation closed.
+- After each answer the console prints `⏱ 1.4s`, the time from when you let go until it starts talking. If that's often above ~2 s, try `"model": "gemini-3.1-flash-live-preview"`.
+- On Windows, Pakito reads the physical keyboard 100 times a second instead of using a keyboard hook. Hooks get delayed or dropped when the program is busy or in the background; polling can't be. `run-pakito.bat keys` shows exactly when it sees DOWN/UP.
+- Clicking in the console no longer freezes Pakito (QuickEdit is turned off), and it opts out of Windows background throttling.
 - The same window still takes typed commands (`focus`, `d`, `stop`, `suggest`...). Run either `assistant.voice` or `assistant`, not both, because the two would keep separate focus timers.
 - What you say plus the tools it calls feed the same learner, so voice requests become routine suggestions too.
 - Google Search is built in, so weather and questions get answered out loud. `web_search` only opens results on screen.
 - **Different key:** set `"hotkey"` in `config.local.json`, e.g. `"right ctrl"`, `"f8"`, `"ctrl+space"`. If you press a third key while holding Ctrl+Alt (Ctrl+Alt+Del, say), it's treated as a shortcut, not talking. Ctrl+Space also triggers VS Code autocomplete, and Alt+Space opens the window menu, which is why neither is the default.
 - `"mode": "toggle"` brings back press-once, hands-free listening.
+- **Calls:** when another app starts using the mic (Zoom, Meet in Opera GX, WhatsApp, Phone Link…), Pakito notices within about a second.
+  - It hangs up if it was mid-conversation and stays off the mic until the call ends. You never hear the closing beep in your ear.
+  - Pressing Ctrl+Alt during a call gives a low double-beep and nothing else.
+  - It reads the same record Windows uses for the mic icon in the taskbar.
+  - If some app holds the mic all the time and Pakito thinks you're always on a call, run `run-pakito.bat mic` to see its name. Then add it to `"call_ignore"`, or set `"pause_on_calls": false` to switch this off.
 
 Settings in `assistant/config.local.json`:
 

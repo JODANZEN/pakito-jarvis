@@ -17,6 +17,26 @@ if /i "%1"=="youtube" (
   "%PY%" -m assistant.podcasts
   pause & exit /b
 )
+if /i "%1"=="mic" (
+  "%PY%" -m assistant.calls
+  pause & exit /b
+)
+if /i "%1"=="mcp" (
+  "%PY%" assistant\mcp_server.py register
+  pause & exit /b
+)
+if /i "%1"=="pet" (
+  "%PY%" -m assistant.pet demo
+  exit /b
+)
+if /i "%1"=="calendar" (
+  "%PY%" -m assistant.calendar_feed
+  pause & exit /b
+)
+if /i "%1"=="keys" (
+  "%PY%" -m assistant.voice keytest
+  pause & exit /b
+)
 if "%GEMINI_API_KEY%"=="" (
   echo GEMINI_API_KEY isn't set in this window. Close it and open a new one after setx.
   pause & exit /b 1

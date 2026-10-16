@@ -1,4 +1,5 @@
 """Voice logic tests with a fake Gemini session and fake audio (no mic, no network)."""
+import array
 import asyncio
 import copy
 from types import SimpleNamespace as NS
@@ -11,7 +12,7 @@ from google.genai import types  # noqa: E402
 
 from assistant.config import DEFAULTS  # noqa: E402
 from assistant.hub import Hub  # noqa: E402
-from assistant.voice import VOICE_DEFAULTS, Conversation, HotkeyTracker, live_config  # noqa: E402
+from assistant.voice import VOICE_DEFAULTS, Conversation, HotkeyTracker, KeyPoller, live_config  # noqa: E402
 
 
 class FakeSession:
@@ -32,12 +33,13 @@ class FakeSession:
 
 
 class FakeAudio:
-    def __init__(self):
+    def __init__(self, sample=0):
         self.played = []
+        self.sample = sample
 
     async def read(self):
         await asyncio.sleep(0.01)
-        return b"\x00" * 2048
+        return array.array("h", [self.sample] * 1024).tobytes()
 
     async def write(self, data):
         self.played.append(data)
@@ -253,6 +255,9 @@ def test_ptt_hold_sends_one_turn_with_preroll(hub):
         assert len(c.pre) > 0              # pre-roll captured so the first syllable isn't cut
         await asyncio.sleep(0.5)
         assert c.release() is False
+        n = s.log.count("audio")
+        await asyncio.sleep(0.45)                     # post-roll tail keeps sending, then ends
+        assert s.log.count("audio") > n
 
     run_mic(c, script)
     assert s.log[0] == "start" and s.log[-1] == "end"
@@ -342,8 +347,208 @@ def test_hotkey_ctrl_alt_ignores_shortcuts():
     assert t.feed("alt", False) is None
     assert t.feed("ctrl", False) is None
     assert t.feed("ctrl", True) is None and t.feed("alt", True) == "press"
-    # holding another key first (typing with ctrl+alt chord) never triggers
+    # a stale key from before (e.g. a key-up Windows never sent) must NOT block talking
     t = HotkeyTracker("ctrl+alt")
-    t.feed("shift", True)
+    t.feed("tab", True)
     t.feed("ctrl", True)
-    assert t.feed("alt", True) is None
+    assert t.feed("alt", True) == "press"
+
+
+def test_hotkey_release_reported_under_another_name():
+    # the bug from Oct 5: Ctrl+Alt acts like AltGr, key-up arrives as "right alt"/"alt gr"
+    t = HotkeyTracker("ctrl+alt")
+    t.feed("ctrl", True)
+    assert t.feed("alt", True) == "press"
+    assert t.feed("alt gr", False) == "release"           # any alt variant releasing ends the hold
+    t.feed("ctrl", False)
+    t.feed("ctrl", True)
+    assert t.feed("alt", True) == "press"                 # and it works again right away
+
+
+def test_hotkey_sync_ends_a_stuck_hold():
+    t = HotkeyTracker("ctrl+alt")
+    t.feed("ctrl", True)
+    assert t.feed("alt", True) == "press"
+    # key-ups never arrive... but the real keyboard says alt is up
+    assert t.sync(lambda p: p != "alt") == "release"
+    assert t.sync(lambda p: False) is None                 # nothing left to end
+    assert not t.active and not t.down
+    t.feed("ctrl", True)
+    assert t.feed("alt", True) == "press"                 # usable again
+    assert t.sync(lambda p: True) is None                  # still physically held: keep going
+    assert t.sync(lambda p: None) is None                  # can't tell (non-Windows): trust events
+
+
+
+def test_latency_printed_after_release(hub):
+    logs = []
+    c = Conversation(hub, VOICE_DEFAULTS, RecSession(), FakeAudio(), log=lambda *a, **k: logs.append(a[0] if a else ""))
+    c.press()
+    c.press_t -= 1                                          # held 1 s
+    c.release()
+
+    async def go():
+        await c.handle(spoke(b"x", done=False))
+        await c.handle(spoke(b"y", done=False))
+
+    asyncio.run(go())
+    assert sum(1 for l in logs if "⏱" in str(l)) == 1      # once per turn, on the first audio
+
+
+
+def test_press_again_during_tail_continues_same_turn(hub):
+    s = RecSession()
+    c = make(hub, s)
+
+    async def script():
+        c.press()
+        await asyncio.sleep(0.45)
+        c.release()
+        await asyncio.sleep(0.1)                     # still in the 0.3 s tail
+        c.press()
+        await asyncio.sleep(0.4)
+        c.release()
+        await asyncio.sleep(0.45)
+
+    run_mic(c, script)
+    assert s.log.count("start") == 1 and s.log.count("end") == 1 and s.log[-1] == "end"
+
+
+def test_level_meter_and_quiet_mic_warning(hub):
+    from assistant.voice import level_bar, peak_level
+    assert peak_level(array.array("h", [0, 16384, -32768]).tobytes()) == 1.0
+    assert "good" in level_bar(0.3) and "too quiet" in level_bar(0.01) and level_bar(0) == "(no audio)"
+    logs = []
+    c = Conversation(hub, VOICE_DEFAULTS, RecSession(), FakeAudio(sample=300), log=lambda *a, **k: logs.append(a[0]))
+
+    async def script():
+        c.press()
+        await asyncio.sleep(0.4)
+        c.release()
+
+    run_mic(c, script)
+    assert any("mic" in l and "too quiet" in l for l in logs) and any("⚠ mic very quiet" in l for l in logs)
+
+
+
+# ---------------- key poller (Windows physical-key polling) ----------------
+
+def poller(keys: set, hotkey="ctrl+alt"):
+    out = []
+    kp = KeyPoller(hotkey, out.append, pressed=lambda p: p in keys)
+    kp.vk_down = lambda vk: vk in keys.get_vks() if hasattr(keys, "get_vks") else False
+    return kp, out
+
+
+def run(kp, n=3):
+    for _ in range(n):
+        w = kp.step()
+        if w:
+            kp.emit(w)
+
+
+def test_poller_press_release_needs_two_stable_reads():
+    keys = set()
+    kp, out = poller(keys)
+    keys |= {"ctrl", "alt"}
+    assert kp.step() is None                       # first read: not trusted yet (debounce)
+    run(kp)
+    assert out == ["press"]
+    keys.clear()
+    run(kp)
+    assert out == ["press", "release"]
+    run(kp, 5)
+    assert out == ["press", "release"]             # nothing repeats while idle
+
+
+def test_poller_only_ctrl_is_not_a_press():
+    keys = {"ctrl"}
+    kp, out = poller(keys)
+    run(kp, 5)
+    assert out == []
+
+
+def test_poller_third_key_cancels_and_waits_for_full_release():
+    class Keys(set):
+        vks = set()
+        def get_vks(self):
+            return self.vks
+    keys = Keys({"ctrl", "alt"})
+    kp, out = poller(keys)
+    run(kp)
+    assert out == ["press"]
+    keys.vks = {0x2E}                               # Delete -> Ctrl+Alt+Del
+    run(kp)
+    assert out == ["press", "cancel"]
+    keys.vks = set()
+    run(kp)
+    assert out == ["press", "cancel"]              # still holding ctrl+alt: stays blocked
+    keys.clear()
+    run(kp)
+    keys |= {"ctrl", "alt"}
+    run(kp)
+    assert out == ["press", "cancel", "press"]     # works again after letting go
+
+
+def test_poller_bounce_is_ignored():
+    keys = set()
+    kp, out = poller(keys)
+    keys |= {"ctrl", "alt"}
+    kp.step()
+    keys.clear()                                   # 10 ms glitch
+    run(kp, 4)
+    assert out == []
+
+
+def test_latency_logged_and_slow_warning(hub):
+    logs = []
+    t = [100.0]
+    c = Conversation(hub, VOICE_DEFAULTS, RecSession(), FakeAudio(), clock=lambda: t[0],
+                     log=lambda *a, **k: logs.append(a[0] if a else ""))
+    c.press()
+    t[0] += 1
+    c.release()
+    t[0] += 13
+
+    async def go():
+        wd = asyncio.create_task(c.watchdog())
+        await asyncio.sleep(0.35)
+        await c.handle(call("lookup", query="x"))
+        await c.handle(spoke(b"a", done=False))
+        c.done.set()
+        await wd
+
+    asyncio.run(go())
+    assert any("⏳ Gemini is slow" in str(l) for l in logs)
+    rec = hub.latency.read()[-1]
+    assert rec["s"] == 13.0 and rec["tools"] == ["lookup"]
+
+
+def test_off_the_record_phrases():
+    from assistant.voice import OFF_RECORD
+    for s in ["Esto es off the record", "Paquito, no lo anotes", "esto no lo apuntes porfa", "fuera de registro"]:
+        assert OFF_RECORD.search(s), s
+    for s in ["Anota esto en mis tareas", "pon música", "no guardes la canción en favoritos"]:
+        assert not OFF_RECORD.search(s), s
+
+
+def _convos(hub):
+    import json
+    p = hub.dir / "logs" / "conversations.jsonl"
+    return [json.loads(l) for l in p.read_text(encoding="utf-8").splitlines() if l.strip()] if p.exists() else []
+
+
+def test_cut_off_conversation_still_logs_last_turn(hub):
+    # he answers, then the conversation dies before Gemini sends turn_complete
+    s = FakeSession([heard("Gracias por mi familia,"), heard(" mis amigos y mis estudios.")])
+    c = make(hub, s, idle_timeout_sec=0.3)
+    asyncio.run(asyncio.wait_for(c.run(), timeout=3))
+    assert _convos(hub)[-1]["said"] == ["Gracias por mi familia, mis amigos y mis estudios."]
+
+
+def test_off_the_record_conversation_keeps_only_a_marker(hub):
+    s = FakeSession([heard("Esto es off the record, me siento mal"), spoke()])
+    c = make(hub, s, idle_timeout_sec=0.3)
+    asyncio.run(asyncio.wait_for(c.run(), timeout=3))
+    last = _convos(hub)[-1]
+    assert last["private"] is True and last["said"] == []

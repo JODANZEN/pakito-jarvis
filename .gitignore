@@ -25,3 +25,7 @@ desktop.ini
 assistant/config.local.json
 .pytest_cache/
 assistant/.spotify_cache
+assistant/.spotify_hits.json
+assistant/.pakito_token
+assistant/.free_mode
+pet/.trash/

@@ -93,6 +93,13 @@ class FocusTrainer:
     def start(self, minutes: float | None = None, label: str | None = None, lockin: bool = False) -> dict:
         with self._lock:
             if self.phase == "focus":
+                if lockin and not self.block.get("lockin"):        # "lock in" mid-block: upgrade, don't restart
+                    self.block["lockin"] = True
+                    if label and not self.block.get("label"):
+                        self.block["label"] = label.strip()
+                    self.notify("Focus", "Locked in 🔒 for the rest of this block.")
+                    self._emit("focus")
+                    return {"upgraded": True, "lockin": True, **self.status()}
                 return {"error": "A focus block is already running.", **self.status()}
             self._cancel()
             custom = minutes is not None
@@ -148,10 +155,12 @@ class FocusTrainer:
                     label=self.block["label"],
                     planned_min=self.block["planned_min"],
                     remaining_min=round(max(0.0, self.block["planned_min"] - elapsed), 1),
+                    remaining_sec=int(max(0.0, self.block["planned_min"] * 60 - (self.clock() - self.block["start"]))),
                     distractions=len(self.block["distractions"]),
                 )
             elif self.phase == "break":
                 out["break_remaining_min"] = round(max(0.0, (self.break_ends - self.clock()) / 60), 1)
+                out["break_remaining_sec"] = int(max(0.0, self.break_ends - self.clock()))
             return out
 
     def stats(self, days: int = 7) -> dict:

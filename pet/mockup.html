@@ -1,0 +1,92 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Pakibot mockup</title>
+<style>:root{--surface-1:#F1EFE8;--border-stronger:#888780;--text-secondary:#5F5E5A;--font-mono:Consolas,monospace}
+body{font-family:system-ui,sans-serif;margin:24px;background:#fff;max-width:720px}
+button{font:inherit;font-size:13px;padding:6px 10px;border:1px solid #B4B2A9;border-radius:8px;background:#fff;cursor:pointer}
+.sr-only{position:absolute;left:-9999px}</style></head><body>
+<h2 class="sr-only">Detailed pixel-art Pakibot robot with a speech bubble, a working countdown timer on its face screen, and states for idle, listening, thinking, talking, focus, nap and streak.</h2>
+<style>
+.row{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 12px}
+.row button.on{background:var(--surface-1);border-color:var(--border-stronger)}
+.stage{background:var(--surface-1);border-radius:12px;padding:16px;display:flex;align-items:center;gap:16px;flex-wrap:wrap;min-height:220px}
+.stage canvas{width:240px;height:215px;image-rendering:pixelated;transition:opacity .6s}
+.bub{position:relative;max-width:300px;min-width:200px;background:#F1EFE8;color:#2C2C2A;border:3px solid #444441;padding:10px 12px;font-family:var(--font-mono);font-size:13px;line-height:1.5;min-height:48px;transition:opacity .6s}
+.bub:before{content:"";position:absolute;left:-15px;top:22px;border:6px solid transparent;border-right:9px solid #444441}
+.bub .who{font-size:11px;color:#5F5E5A;margin-bottom:2px}
+.meta{font-size:12px;color:var(--text-secondary);margin-top:10px;font-family:var(--font-mono)}
+</style>
+<div class="row" id="st"></div>
+<div class="row" id="md"></div>
+<div class="stage"><canvas id="cv" width="240" height="215"></canvas><div class="bub" id="bub"><div class="who" id="who"></div><div id="txt"></div></div></div>
+<div class="meta" id="meta"></div>
+<script>
+const S=5,W=48,H=43,c=document.getElementById("cv").getContext("2d");
+const K={o:"#444441",b:"#D3D1C7",l:"#F1EFE8",m:"#B4B2A9",s:"#888780",scr:"#12302A",scr2:"#163A33",gl:"#5DCAA5",gls:"#2E7D66",am:"#EF9F27",co:"#D85A30",bl:"#378ADD",gr:"#97C459",pu:"#7F77DD"};
+const STATES=[["idle","Idle"],["listen","Listening"],["think","Thinking"],["talk","Talking"],["focus","Focus timer"],["nap","Break nap"],["happy","Streak"]];
+const SAY={idle:["",""],listen:["you","pon música de estudio y empieza un bloque de física"],think:["pakito","buscando en Spotify…"],talk:["pakito","Listo. Lofi en Spotify y bloque de 30 min para PHY 310. Te aviso en el descanso."],focus:["pakito","PHY 310 · vas bien, 0 distracciones"],nap:["pakito","Descanso de 6 min. Estírate, toma agua."],happy:["pakito","3 bloques seguidos sin rendirte. Subiste a nivel 32 min."]};
+let state="idle",mode="companion",focusEnd=0,stateT=0,typed=0,lastIdleAct=0;
+function btns(id,list,get,set){const r=document.getElementById(id);list.forEach(([k,l])=>{const b=document.createElement("button");b.textContent=l;b.onclick=()=>{set(k);[...r.children].forEach(x=>x.classList.toggle("on",x===b))};if(k===get())b.classList.add("on");r.appendChild(b)})}
+btns("st",STATES,()=>state,k=>{state=k;stateT=performance.now();typed=0;lastIdleAct=performance.now();if(k==="focus")focusEnd=Date.now()+30*60*1000});
+btns("md",[["companion","Companion mode"],["popin","Pop-in mode"]],()=>mode,k=>{mode=k;lastIdleAct=performance.now()});
+function px(x,y,col){c.fillStyle=col;c.fillRect(x*S,y*S,S,S)}
+function rect(x,y,w,h,col){c.fillStyle=col;c.fillRect(x*S,y*S,w*S,h*S)}
+function box(x,y,w,h,fill,out){rect(x,y,w,h,out);rect(x+1,y+1,w-2,h-2,fill);px(x,y,"rgba(0,0,0,0)");}
+function clr(x,y){c.clearRect(x*S,y*S,S,S)}
+const F={"0":["111","101","101","101","111"],"1":["010","110","010","010","111"],"2":["111","001","111","100","111"],"3":["111","001","011","001","111"],"4":["101","101","111","001","001"],"5":["111","100","111","001","111"],"6":["111","100","111","101","111"],"7":["111","001","010","010","010"],"8":["111","101","111","101","111"],"9":["111","101","111","001","111"],":":["0","1","0","1","0"]};
+function text(str,x,y,col){let cx=x;for(const ch of str){const g=F[ch];g.forEach((r,yy)=>[...r].forEach((b,xx)=>{if(b==="1")px(cx+xx,y+yy,col)}));cx+=g[0].length+1}}
+function width(str){let w=0;for(const ch of str)w+=F[ch][0].length+1;return w-1}
+function robot(t){
+const bob=(state==="talk"&&Math.floor(t/240)%2)||(state==="happy"&&Math.floor(t/200)%2)||(state==="idle"&&Math.sin(t/700)>0.7)?-1:0;
+const Y=bob;
+const ant=state==="nap"?K.s:state==="listen"?(Math.floor(t/150)%2?K.bl:"#B5D4F4"):state==="think"?[K.am,K.co,K.pu][Math.floor(t/250)%3]:state==="focus"?K.co:state==="talk"?(Math.floor(t/200)%2?K.gl:K.gls):(Math.floor(t/1200)%2?K.am:"#FAC775");
+rect(23,3+Y,2,5,K.s);px(23,3+Y,K.m);box(21,0+Y,6,4,ant,K.o);px(22,1+Y,"#FFFFFF");
+box(10,7+Y,28,22,K.b,K.o);clr(10,7+Y);clr(37,7+Y);clr(10,28+Y);clr(37,28+Y);px(11,8+Y,K.o);px(36,8+Y,K.o);px(11,27+Y,K.o);px(36,27+Y,K.o);
+rect(12,8+Y,22,1,K.l);rect(11,9+Y,1,15,K.l);rect(36,10+Y,1,17,K.m);rect(12,26+Y,24,2,K.m);
+box(6,13+Y,5,9,K.m,K.o);rect(7,15+Y,2,1,K.s);rect(7,17+Y,2,1,K.s);rect(7,19+Y,2,1,K.s);
+box(37,13+Y,5,9,K.m,K.o);rect(39,15+Y,2,1,K.s);rect(39,17+Y,2,1,K.s);rect(39,19+Y,2,1,K.s);
+box(13,10+Y,22,15,K.scr,K.o);rect(13,10+Y,22,1,K.s);
+const dim=state==="nap";
+for(let y=11;y<24;y+=2)rect(14,y+Y,20,1,dim?"#0E2420":K.scr2);
+px(15,12+Y,"#3B6F64");px(16,12+Y,"#3B6F64");px(15,13+Y,"#3B6F64");
+px(12,24+Y,K.o);rect(32,27+Y,2,1,K.s);px(15,27+Y,K.co);px(17,27+Y,K.am);
+face(t,Y,dim);
+rect(21,29+Y,6,2,K.s);rect(21,29+Y,6,1,K.o);
+box(13,30+Y,22,10,K.b,K.o);rect(14,31+Y,20,1,K.l);rect(14,38+Y,20,1,K.m);rect(33,32+Y,1,6,K.m);
+box(16,32+Y,16,5,"#2C2C2A",K.o);
+const fuel=0.62,fw=Math.round(12*fuel);rect(17,33+Y,12,1,"#3B3B38");rect(17,33+Y,fw,1,K.gr);rect(17,34+Y,12,1,"#3B3B38");rect(17,34+Y,fw,1,K.gr);
+const led=Math.floor(t/400)%3;px(30,33+Y,led===0?K.co:"#5F2A18");px(30,34+Y,led===1?K.am:"#5F4210");px(30,35+Y,led===2?K.gl:"#1C4A3D");
+px(17,35+Y,"#888780");px(19,35+Y,"#888780");px(21,35+Y,"#888780");
+const up=state==="happy"&&Math.floor(t/300)%2;
+if(up){box(7,24+Y,5,8,K.m,K.o);box(5,22+Y,4,3,K.s,K.o)}else{box(8,31+Y,5,8,K.m,K.o);box(8,38+Y,5,3,K.s,K.o)}
+const wave=state==="talk"?Math.floor(t/350)%2:0;
+if(up){box(36,24+Y,5,8,K.m,K.o);box(39,22+Y,4,3,K.s,K.o)}else{box(35,31-wave*2+Y,5,8,K.m,K.o);box(35,38-wave*2+Y,5,3,K.s,K.o)}
+box(15,40,7,3,K.s,K.o);box(26,40,7,3,K.s,K.o);rect(16,40,5,1,K.m);rect(27,40,5,1,K.m);
+if(state==="nap"){const k=Math.floor(t/600)%3;[[40,6],[43,3],[45,0]].forEach(([x,y],i)=>{if(i<=k){rect(x,y,3,1,K.pu);px(x+1,y+1,K.pu);rect(x,y+2,3,1,K.pu)}})}
+if(state==="happy"){const on=Math.floor(t/250)%2;[[3,5],[44,9],[44,30],[2,34]].forEach(([x,y],i)=>{if((i+on)%2){px(x,y,K.am);px(x-1,y,K.am);px(x+1,y,K.am);px(x,y-1,K.am);px(x,y+1,K.am)}})}
+}
+function eye(x,y,w,h,col){rect(x,y,w,h,col);px(x,y,K.scr);px(x+w-1,y,K.scr)}
+function face(t,Y,dim){
+const g=K.gl,blink=(t%3400)<150;
+if(state==="focus"){const left=Math.max(0,focusEnd-Date.now()),m=Math.floor(left/60000),s=Math.floor(left/1000)%60,str=String(m).padStart(2,"0")+":"+String(s).padStart(2,"0");
+rect(18,13+Y,3,1,g);rect(27,13+Y,3,1,g);text(str,24-Math.ceil(width(str)/2),16+Y,g);
+const p=1-left/(30*60*1000);rect(15,22+Y,18,1,K.gls);rect(15,22+Y,Math.round(18*p),1,g);return}
+if(state==="idle"&&(t%9000)>7000){const d=new Date(),str=String(d.getHours()).padStart(2,"0")+":"+String(d.getMinutes()).padStart(2,"0");text(str,24-Math.ceil(width(str)/2),15+Y,K.am);return}
+if(dim){rect(17,17+Y,4,1,K.gls);rect(27,17+Y,4,1,K.gls);return}
+if(state==="happy"){px(17,15+Y,g);px(18,14+Y,g);px(19,14+Y,g);px(20,15+Y,g);px(27,15+Y,g);px(28,14+Y,g);px(29,14+Y,g);px(30,15+Y,g);rect(21,19+Y,6,1,g);px(20,18+Y,g);px(27,18+Y,g);return}
+if(state==="think"){eye(19,13+Y,3,3,g);eye(29,13+Y,3,3,g);const n=Math.floor(t/120)%16;for(let i=0;i<4;i++)px(16+((n+i)%16),20+Y,i===3?g:K.gls);return}
+const big=state==="listen";
+if(blink&&!big){rect(17,16+Y,4,1,g);rect(27,16+Y,4,1,g)}else{eye(17,13+Y-(big?1:0),4,big?6:5,g);eye(27,13+Y-(big?1:0),4,big?6:5,g);px(17,13+Y-(big?1:0),K.scr);px(19,14+Y,"#C9F0E2");px(29,14+Y,"#C9F0E2")}
+if(state==="listen"){for(let i=0;i<8;i++){const h=1+Math.round(Math.abs(Math.sin(t/90+i*1.7))*2.4);rect(20+i,21+Y-h,1,h,i%2?g:K.gls)}return}
+if(state==="talk"){const o=Math.floor(t/140)%3;rect(21,20+Y,6,o?2:1,g);if(o===2)rect(22,22+Y,4,1,K.gls);return}
+rect(22,21+Y,4,1,g);
+}
+function frame(t){
+c.clearRect(0,0,W*S,H*S);robot(t);
+const [who,msg]=SAY[state],n=Math.min(msg.length,Math.floor((t-stateT)/32));
+document.getElementById("who").textContent=who;document.getElementById("txt").textContent=state==="focus"?msg:msg.slice(0,n)+(n<msg.length?"▌":"");
+const bub=document.getElementById("bub");bub.style.opacity=msg?1:0;
+const fade=mode==="popin"&&state==="idle"&&t-lastIdleAct>3000;document.getElementById("cv").style.opacity=fade?0.06:1;
+document.getElementById("meta").textContent=(mode==="popin"?"pop-in: fades ~10 s after you stop talking (3 s here)":"companion: always on screen, sleeps when idle")+" · fuel 62% · level 30 min";
+requestAnimationFrame(frame)}
+requestAnimationFrame(frame);
+</script>
+</body></html>
