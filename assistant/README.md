@@ -151,6 +151,14 @@ Claude Code, the Claude desktop app and later Hermes can use Pakito's tools: add
   - Browser requests are refused, so a website can't make Pakito do things.
 - **Voice-only tools:** `ask_claude` and `open_claude_code` can't be used through MCP, so an agent can't start more agents.
 
+## Notes and reminders
+- **"Toma nota: …" / "anota esta idea"** saves your words as a raw capture in your vault's **inbox**, as `inbox/YYYY-MM-DD <topic>.md`. It follows the vault rules: your phrasing is kept, the note links up to Home, and the weekly sweep files it. More notes on the same topic that day go into the same file.
+- **"Recuérdame…"**:
+  - **With a time** ("el martes a las 9", "en 3 días", "mañana a las 8"): when it's due you get a toast and Pakibot pops in. Pakito keeps bringing it up in conversations until you've heard it. "Recuérdamelo mañana" snoozes it.
+  - **Without a time** ("recuerda que le presté 20 a Mario"): Pakito asks you about it about 2 days later, one thing per conversation, and saves your answer.
+- **"¿Qué te pedí que recordara?"** lists them. They're also kept as a checklist in `Assistant/Reminders.md`.
+- **Reminders fire only while Pakito is running.** If your PC was off, it brings up what you missed the next time you talk to it.
+
 ## Dictation: hold Ctrl+Win, talk, let go
 Works like Wispr Flow, anywhere you can type: WhatsApp, Canvas, VS Code, email.
 - **Use:** hold **Ctrl+Win**, talk, and let go. Cleaned-up text appears where your cursor is, usually 1–2 s later.
@@ -261,7 +269,7 @@ Then say "ask Claude …", or Gemini decides to for hard questions. It runs in t
 Typed: `claude <question>`. It counts against your Claude plan's usage, and it isn't available on the free claude.ai plan.
 
 ## Tests
-`python -m pytest tests`: 138 tests. They use a fake clock and a fake Gemini session, so nothing launches and nothing hits the network.
+`python -m pytest tests`: 154 tests. They use a fake clock and a fake Gemini session, so nothing launches and nothing hits the network.
 
 ## Voice (Gemini Live)
 

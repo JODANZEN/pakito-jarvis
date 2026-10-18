@@ -996,3 +996,11 @@ def test_expired_claude_login_is_explained(env, monkeypatch):
     job = hub.claude.find()
     assert job["login_expired"] and "run claude, log in again" in job["spoken"]
     assert "log in again" in notes[-1][1]
+
+
+def test_recent_survives_long_results_logged_as_text(env):
+    """Results over 500 chars are logged as text; recent() used to crash on them (every conversation died)."""
+    hub, *_ = env
+    hub.events.append({"ts": hub.clock(), "tool": "run_routine", "ok": True, "args": {"name": "lock in"},
+                       "result": "{'routine': 'lock in', ...}"})
+    assert any("lock in" in l for l in hub.recent())

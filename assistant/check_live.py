@@ -143,7 +143,27 @@ def check_claude() -> None:
         print("❌ Claude Code not found.\n   PowerShell: irm https://claude.ai/install.ps1 | iex\n"
               "   then open a NEW terminal, run `claude`, log in, and type /exit.")
         return
-    print(f"Found Claude Code: {exe}\nAsking a test question (first run can take ~20 s)…")
+    import os, shutil, subprocess
+    print(f"Pakito uses: {exe}")
+    try:
+        v = subprocess.run([exe, "--version"], capture_output=True, text=True, timeout=20).stdout.strip()
+        print(f"  version: {v}")
+    except Exception as e:
+        print(f"  version: couldn't run it ({type(e).__name__})")
+    others = set()
+    for d in os.environ.get("PATH", "").split(os.pathsep):
+        for n in ("claude.exe", "claude.cmd", "claude"):
+            f = os.path.join(d, n)
+            if os.path.isfile(f) and os.path.normcase(f) != os.path.normcase(exe):
+                others.add(f)
+    if others:
+        print("  other Claude installs on PATH (your terminal may use one of these instead):")
+        for f in sorted(others):
+            print(f"    {f}")
+    for k in ("CLAUDE_CONFIG_DIR", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"):
+        if os.environ.get(k):
+            print(f"  note: {k} is set in this environment")
+    print("Asking a test question (first run can take ~20 s)…")
     out = {}
     b = ClaudeBridge(cfg["claude"], data_dir(cfg), notify=lambda t, m: None, threaded=False)
     b.listeners.append(lambda job: out.update(job) or True)

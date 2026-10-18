@@ -107,6 +107,12 @@ def _expand_home(p: str):
     return Path(p)
 
 
+def _res(e: dict) -> dict:
+    """An event's result as a dict (long results are logged as text, which has no fields)."""
+    r = e.get("result")
+    return r if isinstance(r, dict) else {}
+
+
 class Hub:
     def __init__(self, cfg: dict | None = None, launcher: Callable[[str], None] | None = None,
                  notifier: Callable[[str, str], None] | None = None,
@@ -129,7 +135,7 @@ class Hub:
         self.recent_opens: dict[tuple, float] = {}
         cutoff = clock() - self.mem["dedupe_min"] * 60
         for e in self.events.read()[-300:]:
-            if e.get("tool") in DEDUPE and e.get("ok") and not (e.get("result") or {}).get("skipped") \
+            if e.get("tool") in DEDUPE and e.get("ok") and not _res(e).get("skipped") \
                     and e.get("ts", 0) >= cutoff:
                 self.recent_opens[(e["tool"], _target(e["tool"], e.get("args", {})))] = e["ts"]
         self.spotify = None
@@ -151,7 +157,7 @@ class Hub:
         from .tasks import LocalTasks
         self.tasks = LocalTasks(self.dir / "Tasks.md")
         from .podcasts import Podcasts
-        heard = {(e.get("result") or {}).get("id") for e in self.events.read()
+        heard = {_res(e).get("id") for e in self.events.read()
                  if e.get("tool") in ("play_podcast", "podcast_heard") and e.get("ok")}
         self.podcasts = Podcasts(self.cfg.get("podcasts", []), {h for h in heard if h}, clock=clock,
                                  api_key=self.cfg.get("youtube_api_key"),
@@ -169,6 +175,13 @@ class Hub:
             self.calendar.maybe_refresh()
         from .pet_state import PetState
         self.pet = PetState(self.dir / "state" / "pet.json", clock, self.cfg.get("pet"))
+        from pathlib import Path as _P
+        from .notes import Inbox, Reminders
+        self.inbox = Inbox(_P(self.cfg["vault_path"]), clock)
+        self.reminders = Reminders(self.dir / "state" / "reminders.json", self.dir / "Reminders.md", clock=clock,
+                                   notify=self.notify, on_fire=self._pet_reminder)
+        if launcher is None:
+            self.reminders.start()
         self._fuel = (0.0, 0.0)
         self.focus.listeners.append(lambda phase: phase == "break" and self.pet.flash("happy", 8))
         self.claude.listeners.append(self._pet_news)
@@ -183,6 +196,10 @@ class Hub:
         self._register_builtins()
 
     # ---------- the pet ----------
+    def _pet_reminder(self, r: dict) -> None:
+        self.pet.say("pakito", ("⏰ " if r["kind"] == "due" else "❓ ") + r["what"][:200])
+        self.pet.flash("happy", 10)
+
     def _pet_news(self, job: dict) -> bool:
         """A Claude job finished: the pet pops in with it. Returns False: the voice side still decides 'heard'."""
         if job.get("status") == "done":
@@ -269,13 +286,13 @@ class Hub:
         for e in self.events.read()[-400:]:
             if e.get("ts", 0) < cutoff or not e.get("ok") or e.get("tool") not in VERB:
                 continue
-            if (e.get("result") or {}).get("skipped"):
+            if _res(e).get("skipped"):
                 continue
             a = e.get("args", {})
             what = a.get("url") or a.get("name") or a.get("query") or a.get("label") or a.get("question") \
                 or a.get("to") or a.get("book") or a.get("task") or ""
             if e["tool"] == "play_podcast":
-                what = (e.get("result") or {}).get("title", "")
+                what = _res(e).get("title", "")
             if e["tool"] == "open_book" and a.get("page"):
                 what = f"{what} p.{a['page']:g}"
             if e["tool"] == "open_url":
@@ -591,6 +608,37 @@ class Hub:
         def type_text(text: str):
             ok = self.typer(text)
             return {"typed": bool(ok), "chars": len(text)} if ok else {"error": "Couldn't type it (clipboard busy)."}
+
+        @self.tool("take_note", "Save a note to his second brain's inbox ('toma nota', 'anota esta idea', 'apunta "
+                   "que…'): ideas, thoughts, things that come to mind. text = his words as he said them (clean up "
+                   "filler only, don't rewrite or summarize). title = 2-5 word topic. kind: idea | note | thought. "
+                   "Not for to-dos (add_task) or things to bring back later (remember).",
+                   _obj({"text": S, "title": S, "kind": S}, ["text"]))
+        def take_note(text: str, title: str | None = None, kind: str = "note"):
+            return self.inbox.add(text, title, kind)
+
+        @self.tool("remember", "Remember something and bring it back later ('recuérdame…', 'remember that…'). "
+                   "due = when to remind him, ISO local time like 2026-10-20T09:00 (work it out from 'el martes', "
+                   "'en 3 días', 'mañana a las 8'; a day with no time = 9:00). No due = something to ask him about "
+                   "later (follow up in ask_in_days, default 2): e.g. 'recuerda que le presté 20 a Mario'.",
+                   _obj({"what": S, "due": S, "ask_in_days": N}, ["what"]))
+        def remember(what: str, due: str | None = None, ask_in_days: float | None = None):
+            return self.reminders.add(what, due, ask_in_days)
+
+        @self.tool("reminders", "What he asked you to remember: upcoming reminders and follow-ups.")
+        def reminders():
+            return {"reminders": self.reminders.upcoming()}
+
+        @self.tool("reminder_done", "Close a reminder once he's heard it, or record his answer to a follow-up "
+                   "question (answer = what he said). item = id or a word from it; omit for the one just mentioned.",
+                   _obj({"item": S, "answer": S}))
+        def reminder_done(item: str | None = None, answer: str | None = None):
+            return self.reminders.done(item, answer)
+
+        @self.tool("snooze_reminder", "Push a reminder later ('recuérdamelo mañana', 'en una hora'). until = ISO "
+                   "local time, or days.", _obj({"item": S, "until": S, "days": N}))
+        def snooze_reminder(item: str | None = None, until: str | None = None, days: float | None = None):
+            return self.reminders.snooze(item, until, days)
 
         @self.tool("pet_mode", "Pakibot, the on-screen pet: popin = appears only while you talk, stay = always "
                    "on screen ('quédate'), off = hide it ('desaparece'). 'Aparece' = popin.",

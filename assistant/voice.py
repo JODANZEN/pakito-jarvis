@@ -64,6 +64,19 @@ END_TOOL = {
 }
 
 
+def log_error(hub: Hub, exc: BaseException) -> None:
+    """Full traceback of a crashed conversation, so it can be fixed from the log instead of guessed."""
+    import traceback
+    try:
+        p = hub.dir / "logs" / "errors.log"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with p.open("a", encoding="utf-8") as f:
+            f.write(f"--- {datetime.now():%Y-%m-%d %H:%M:%S}\n")
+            f.write("".join(traceback.format_exception(type(exc), exc, exc.__traceback__)))
+    except Exception:
+        pass
+
+
 def system_prompt(hub: Hub, vcfg: dict) -> str:
     routines = hub.routines.all()
     rlines = "\n".join(
@@ -90,6 +103,14 @@ def system_prompt(hub: Hub, vcfg: dict) -> str:
     if to_review:
         claude_txt += "\nBuilds waiting for his review: " + "; ".join(
             f"{j['question'][:60]} ({j.get('project')})" for j in to_review[-3:])
+    due, ask = hub.reminders.pending()
+    if due:
+        claude_txt += ("\nREMINDERS that are due (tell him first, in one sentence each; then call reminder_done, or "
+                       "snooze_reminder if he wants it later): " + "; ".join(f"[{r['id']}] {r['what']}" for r in due[:4]))
+    if ask:
+        claude_txt += ("\nThings he asked you to check on later. Ask about ONE per conversation, briefly, after "
+                       "handling what he asked; save his answer with reminder_done(item, answer): " +
+                       "; ".join(f"[{r['id']}] {r['what']}" for r in ask[:3]))
     from .debrief import dream_line
     dream = dream_line(hub)
     if dream:
@@ -121,6 +142,8 @@ How to act:
 - If he asks about something on his screen ("mira esto", "¿qué es esto?", "explain this error"), call
   look_at_screen and answer from the image. "Mira esta parte" = area region. "Explícamelo bien / paso a paso" =
   claude=true too: give the quick version yourself, Claude's full one comes later.
+- "Toma nota / anota esta idea" -> take_note (his words, into his inbox). "Recuérdame…" -> remember (with due if
+  he gives a time; without it, you'll ask him about it later). "Agrega a mis tareas" -> add_task.
 - His calendar: call whats_coming for "¿qué tengo hoy?" / "¿qué viene?". If an exam or project is today or
   tomorrow and he hasn't heard about it in this conversation, mention it once, in one short sentence. You're his
   organizer: dates and what to study, not homework help.
@@ -902,7 +925,8 @@ async def main_async() -> None:
         conv = box["conv"]
         if task and task.done():
             if task.exception():
-                print(f"\n⚠ voice error: {task.exception()!r}")
+                print(f"\n⚠ voice error: {task.exception()!r}  (details in logs/errors.log)")
+                log_error(hub, task.exception())
             task, conv = None, None
         if vcfg["mode"] != "ptt":                # toggle: press starts, next press hangs up
             if ev != "press":
