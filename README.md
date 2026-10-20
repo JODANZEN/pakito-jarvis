@@ -1,4 +1,12 @@
-# pakito-jarvis
+# Pakito
+
+A free, fast voice assistant for Windows (Gemini Live + a hub of PC tools). **Setup:** double-click
+`setup-pakito.bat`, answer a few questions, then run `run-pakito.bat` and hold Ctrl+Alt to talk.
+Everything else is in [assistant/README.md](assistant/README.md).
+
+---
+
+## Older: Jarvis proxy (pakito-jarvis)
 
 Drop-in infrastructure that lets [isair/jarvis](https://github.com/isair/jarvis) — a
 local voice assistant that speaks the Ollama HTTP API and nothing else — run against any

@@ -406,6 +406,8 @@ def test_spanish_shortcuts_flights_and_default_music(env):
 
 def test_open_book_with_page_and_routine(env):
     hub, clock, launched, _ = env
+    hub.cfg["books"] = {"taylor": {"path": r"C:\Users\x\Downloads\pdfcoffee.com_john-taylor-classical-mechanics-pdf-pdf-free.pdf",
+                                   "about": "Taylor, Classical Mechanics"}}
     r = hub.call("open_book", {"book": "Taylor", "page": 161})
     assert r["page"] == 161 and launched[-1].startswith("file:") and launched[-1].endswith("free.pdf#page=161")
     assert "pdfcoffee.com_john-taylor" in launched[-1]

@@ -33,18 +33,18 @@ from .claude_bridge import ClaudeBridge, find_claude
 
 MIN_AUTO_VERSION = (2, 1, 281)          # auto mode in `claude -p` needs this or newer
 BUILD_SYSTEM = (
-    "You're doing a build job Jose handed off through his voice assistant (Pakito) while he does something "
-    "else. You're in a git worktree on a branch made just for this job; his own checkout is untouched. Do the "
+    "You're doing a build job the user handed off through their voice assistant (Pakito) while they do "
+    "something else. You're in a git worktree on a branch made just for this job; their own checkout is untouched. Do the "
     "task end to end: make the changes, run the project's tests or build if there's an obvious way, and commit "
     "your work on this branch with clear messages. Never push, switch branches, merge, or touch other worktrees. "
-    "Don't install new packages: if one is needed, say so in your summary. If something needs his decision, make "
+    "Don't install new packages: if one is needed, say so in your summary. If something needs their decision, make "
     "the reasonable choice, note it, and keep going. Finish with a SPOKEN summary of at most 60 words (plain "
-    "sentences, read aloud: what you did, what's left, anything he must decide). Then a line '---' and details "
-    "for his review: files changed, how to try it, open questions."
+    "sentences, read aloud: what you did, what's left, anything they must decide). Then a line '---' and details "
+    "for their review: files changed, how to try it, open questions."
 )
 FREE_SYSTEM = (
-    "Jose started this session in free mode and is watching. You're in a git worktree on a branch made for this "
-    "job; his own checkout is untouched. Commit your work on this branch. Never push, switch branches or merge."
+    "The user started this session in free mode and is watching. You're in a git worktree on a branch made for this "
+    "job; their own checkout is untouched. Commit your work on this branch. Never push, switch branches or merge."
 )
 HARD_DENY = ["Bash(git push*)", "Bash(git checkout*)", "Bash(git switch*)", "Bash(git merge*)",
              "Bash(git rebase*)", "Bash(git reset --hard*)", "Bash(git worktree*)", "Bash(git branch -D*)",

@@ -331,6 +331,10 @@ async def main() -> None:
     if len(sys.argv) > 1 and sys.argv[1] == "claude":
         check_claude()
         return
+    from .config import gemini_key, load_config
+    if not gemini_key(load_config()):
+        print("❌ No Gemini key. Run: run-pakito.bat setup")
+        return
     client = genai.Client()
     if len(sys.argv) > 1 and sys.argv[1] == "dictation":
         await check_dictation(client)

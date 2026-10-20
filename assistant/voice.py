@@ -1,8 +1,7 @@
 """Voice layer: Gemini Live on a hotkey, with the hub's tools.
 
-    setx GEMINI_API_KEY "your-key"      (once, then open a new terminal)
-    pip install google-genai pyaudio keyboard winotify
-    python -m assistant.voice
+    run-pakito.bat setup                (once: Gemini key, mic, browser, Spotify...)
+    run-pakito.bat                      (or: python -m assistant.voice)
 
 Push-to-talk: HOLD Ctrl+Alt while you speak, release to send. The conversation stays open
 for follow-ups (~60 s), so the next hold is instant. Hold again while it's talking to cut it
@@ -26,7 +25,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from .config import load_config
+from .config import gemini_key, load_config, user_line, user_name
 from .hub import Hub
 
 # Say any of these and the whole conversation is kept out of the logs (only a 'private' marker with its time is saved,
@@ -46,14 +45,15 @@ VOICE_DEFAULTS = {
     "idle_timeout_sec": 60,      # end the conversation after this much silence
     "barge_in": False,           # toggle mode only. True with headphones: interrupt it mid-sentence.
                                  # False: mic muted while it talks. (PTT never has echo: mic only sends while held)
-    "location": "Tempe, AZ",
+    "location": None,            # e.g. "Tempe, AZ": for weather and "near me" (set by run-pakito.bat setup)
+    "mic": None,                 # part of the mic's name (run-pakito.bat setup lists them). None = Windows default
     "google_search": True,       # False if your free tier blocks it -> uses the free `lookup` tool instead
     "pause_on_calls": True,      # another app using the mic (Zoom, Meet, WhatsApp...) -> Pakito hangs up and stays off it
-    "call_ignore": [],
+    "call_ignore": [],           # apps that hold the mic but aren't calls, e.g. ["NVIDIA Broadcast.exe"] (run-pakito.bat mic)
     "dictation": True,           # hold the dictation hotkey anywhere: talk, let go, cleaned text gets typed
     "dictation_hotkey": "ctrl+windows",
     "dictation_model": None,     # None = first working Gemini flash model
-    "vocabulary": [],            # extra words dictation should spell right, e.g. ["Botana", "RKKY"]           # apps that hold the mic but aren't calls, e.g. ["NVIDIA Broadcast.exe"] (see run-pakito.bat mic)
+    "vocabulary": [],            # extra words dictation should spell right, e.g. ["Botana", "RKKY"]
 }
 
 END_TOOL = {
@@ -116,8 +116,9 @@ def system_prompt(hub: Hub, vcfg: dict) -> str:
     if dream:
         claude_txt += ("\nFrom last night's dream (Claude processed his logs while he slept). After handling what he "
                        "asked, tell him this once, in one short sentence, in Spanish: " + dream[:300])
-    return f"""You are Pakito, Jose's voice assistant on his Windows PC. He's a CS + Physics student at ASU.
-Now: {datetime.now():%A %B %d %Y, %I:%M %p}. He's in {vcfg['location']} unless he says otherwise.
+    where = f" They're in {vcfg['location']} unless they say otherwise." if vcfg.get("location") else ""
+    return f"""You are Pakito, the voice assistant on the Windows PC of {user_line(hub.cfg)}.
+Now: {datetime.now():%A %B %d %Y, %I:%M %p}.{where}
 
 How to talk: short and natural, one or two sentences. This is speech, so no lists or markdown.
 Answer in whatever language he speaks (English or Spanish, he switches).
@@ -418,9 +419,9 @@ class Conversation:
         self.last_activity = self.clock()
         self.log(f"\n  🟠 Claude ({job.get('seconds', '?')} s): {job['spoken'][:200]}")
         await self.session.send_realtime_input(
-            text=(f'(Claude finished the build "{job["question"][:80]}". Tell Jose briefly, then ask if he wants '
+            text=(f'(Claude finished the build "{job["question"][:80]}". Tell him briefly, then ask if he wants '
                   f'to review it: {job["spoken"]})' if job.get("kind") == "build" else
-                  f'(Claude\'s answer to "{job["question"]}" just arrived. Tell Jose in your own words, briefly: '
+                  f'(Claude\'s answer to "{job["question"]}" just arrived. Tell him in your own words, briefly: '
                   f'{job["spoken"]})'))
 
     async def run(self) -> None:
@@ -481,12 +482,45 @@ def shared_pyaudio():
     return _PA
 
 
+MIC = {"name": None}          # voice.mic from config: part of the mic's name; None = Windows default
+
+
+def list_mics(pa) -> list[dict]:
+    """Input devices, MME only (each mic shows up once per Windows audio API otherwise)."""
+    out, seen = [], set()
+    for i in range(pa.get_device_count()):
+        d = pa.get_device_info_by_index(i)
+        if d.get("maxInputChannels", 0) < 1:
+            continue
+        try:
+            api = pa.get_host_api_info_by_index(d["hostApi"]).get("name", "")
+        except Exception:
+            api = ""
+        if api and "MME" not in api:
+            continue
+        if d["name"] in seen:
+            continue
+        seen.add(d["name"])
+        out.append(d)
+    return out
+
+
+def pick_mic(pa, name: str | None = None) -> dict:
+    """The configured mic (first input whose name contains `name`), else the Windows default."""
+    name = (name if name is not None else MIC["name"]) or ""
+    if name.strip():
+        for d in list_mics(pa):
+            if name.lower() in d["name"].lower():
+                return d
+    return pa.get_default_input_device_info()
+
+
 class PyAudioIO:
     def __init__(self):
         import pyaudio
 
         self.pa = shared_pyaudio()
-        mic = self.pa.get_default_input_device_info()
+        mic = pick_mic(self.pa)
         self.mic_name = mic.get("name", "?")
         self.inp = self.pa.open(format=pyaudio.paInt16, channels=1, rate=SEND_RATE, input=True,
                                 input_device_index=mic["index"], frames_per_buffer=CHUNK)
@@ -839,12 +873,20 @@ async def main_async() -> None:
     from google import genai
 
     cfg = load_config()
+    if not gemini_key(cfg):
+        print("No Gemini key yet. Run setup-pakito.bat (or run-pakito.bat setup): it walks you through getting a "
+              "free one.")
+        return
     vcfg = {**VOICE_DEFAULTS, **cfg.get("voice", {})}
+    MIC["name"] = vcfg.get("mic")
     hub = Hub(cfg)
-    hub.blocker.start()
     from . import server
-    server.start(hub)
-    client = genai.Client()  # reads GEMINI_API_KEY
+    if server.start(hub) is None:
+        # port 8765 taken = another Pakito is already running; two of them means double voice + double pets
+        print("Pakito ya está corriendo en otra ventana. Cierro esta para no duplicarlo.")
+        return
+    hub.blocker.start()
+    client = genai.Client()  # reads GEMINI_API_KEY (gemini_key() exported it from config if needed)
     loop = asyncio.get_running_loop()
     events: asyncio.Queue[str] = asyncio.Queue()
     tweaks = windows_tweaks()

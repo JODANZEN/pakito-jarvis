@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 from .claude_bridge import ClaudeBridge
-from .config import data_dir, load_config
+from .config import data_dir, load_config, user_name
 from .focus import FocusTrainer
 from .blocker import Blocker
 from .learner import Learner
@@ -37,7 +37,6 @@ aliases: work, research, research mode, trabajo
 
 ## lock in
 aliases: study, study mode, lock in mode, lockin, estudiar
-- open: https://canvas.asu.edu
 - open: https://chatgpt.com
 - music: deep focus
 - lockin: on
@@ -45,19 +44,12 @@ aliases: study, study mode, lock in mode, lockin, estudiar
 
 ## homework
 aliases: homework mode, hw, tarea
-- open: https://canvas.asu.edu
 - open: https://chatgpt.com
 - music: chill study
 
-## phy 310
-aliases: mechanics, classical mechanics, mecanica, taylor, phy 310 study
-- book: taylor
-- focus: PHY 310
-
-## physics reading
-aliases: phy 302, phy 302 reading, perusall, reading, lectura
-- open: https://app.perusall.com
-- open: https://chatgpt.com
+## break
+aliases: descanso, pausa
+- music: chill
 """
 
 
@@ -162,7 +154,8 @@ class Hub:
         self.podcasts = Podcasts(self.cfg.get("podcasts", []), {h for h in heard if h}, clock=clock,
                                  api_key=self.cfg.get("youtube_api_key"),
                                  spotify=self.spotify.sp if self.spotify else None)
-        self.claude = ClaudeBridge(self.cfg["claude"], self.dir, self.notify, clock=clock)
+        self.claude = ClaudeBridge(self.cfg["claude"], self.dir, self.notify, clock=clock,
+                                   who=user_name(self.cfg), about=(self.cfg.get("user") or {}).get("about", ""))
         self.start_apps = StartApps()                 # installed apps, for "abre <anything>"
         self.open_terminal = open_terminal
         from .builds import Builds
@@ -421,6 +414,7 @@ class Hub:
                    "; ".join(f"{k} = {v.get('about', '')}" for k, v in books.items()),
                    _obj({"book": S, "page": N}, ["book"]))
         def open_book(book: str, page: float | None = None):
+            books = self.cfg.get("books") or {}
             key = book.lower().strip()
             match = books.get(key) or next((v for k, v in books.items()
                                             if k in key or key in k or key in v.get("about", "").lower()), None)
@@ -648,7 +642,7 @@ class Hub:
             return {"pet": m} if m else {"error": "mode is popin, stay or off"}
 
         @self.tool("ask_claude", "Hand a hard question to Claude: deep explanations, planning, comparisons, research. "
-                   "Takes 10-60 s and the answer comes back on its own; tell Jose you're checking with Claude. "
+                   "Takes 10-60 s and the answer comes back on its own; say you're checking with Claude. "
                    "Not for quick facts.", _obj({"question": S, "context": S}, ["question"]))
         def ask_claude(question: str, context: str | None = None):
             return self.claude.ask(question, context)

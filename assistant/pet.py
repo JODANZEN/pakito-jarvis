@@ -464,6 +464,13 @@ def main() -> None:
         return
     from .config import data_dir, load_config
     from .server import PORT, TOKEN_FILE
+    # one Pakibot at a time: hold a local port as a lock for as long as this window lives
+    import socket
+    lock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        lock.bind(("127.0.0.1", PORT + 2))
+    except OSError:
+        return                                  # another Pakibot is already on screen
     cfg = load_config()
     pcfg = cfg.get("pet") or {}
     try:

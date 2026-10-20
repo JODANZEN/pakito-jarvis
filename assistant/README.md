@@ -1,16 +1,31 @@
-# Pakito assistant — v0 (hub + focus trainer + learning)
+# Pakito assistant
 
-There's no voice yet. This is the core that the voice layer will plug into. Every action goes through `Hub.call` and gets logged, which is what the learning and the stats read from.
+A free, fast voice assistant for Windows: Gemini Live on a hotkey, plus a hub of tools (apps, music, focus
+trainer with lock-in, routines, notes, reminders, dictation, screen questions, Claude for hard ones).
+Every action goes through `Hub.call` and gets logged, which is what the learning and the stats read from.
 
-## Run it
+## Start here (new PC)
 
-```powershell
-cd C:\Users\jdsn2\source\repos\pakito-jarvis
-pip install winotify matplotlib      # winotify = Windows toasts (optional, it prints otherwise)
-python -m assistant
-```
+1. Download the repo, double-click **`setup-pakito.bat`**. It installs the Python packages (it uses Miniconda if you
+   have it, else makes a private `.venv` with your Python 3.10+), then asks a few questions:
+   your name and city, a **free Gemini key** (it opens the page and checks the key), where to keep notes,
+   your **browser**, your **mic** (with a level test), **Spotify** (Premium or not), and whether Claude Code is there.
+2. Double-click **`run-pakito.bat`**. Hold **Ctrl+Alt**, talk, let go.
 
-**Free hotkey:** Windows Terminal "quake mode" (Win + `) drops a terminal down from the top of the screen. Run `python -m assistant` in it and it's one keypress away. The real hotkey comes with the voice layer.
+Change any answer later with `run-pakito.bat setup` (Enter keeps what you have).
+
+### Without a Second Brain
+Nothing here needs Obsidian. By default Pakito keeps its files in `Documents\Pakito` as plain Markdown:
+`Assistant/Routines.md`, `Tasks.md`, `Reminders.md`, day notes, logs, and `inbox/` for "toma nota". If you do use
+Obsidian, point setup at your vault and the same files land inside it. The daily "dream" that files notes into a
+Second Brain is a separate scheduled Claude task, not part of Pakito.
+
+| Needs only the Gemini key | Needs an extra |
+|---|---|
+| talking, Google Search answers, opening apps/sites, routines, focus trainer + lock-in, notes, reminders, tasks, dictation, "mira esto", Pakibot, debrief | Spotify play/pause (Premium + `run-pakito.bat spotify`), lock-in site blocking (the browser extension), "pregúntale a Claude" and builds (Claude Code), calendar (`run-pakito.bat calendar`) |
+
+**Text-only mode** (no voice, typed commands): `run-pakito.bat text`. **Free hotkey for it:** Windows Terminal "quake
+mode" (Win + `).
 
 ## Commands
 
@@ -269,14 +284,13 @@ Then say "ask Claude …", or Gemini decides to for hard questions. It runs in t
 Typed: `claude <question>`. It counts against your Claude plan's usage, and it isn't available on the free claude.ai plan.
 
 ## Tests
-`python -m pytest tests`: 154 tests. They use a fake clock and a fake Gemini session, so nothing launches and nothing hits the network.
+`python -m pytest tests`: 167 tests. They use a fake clock and a fake Gemini session, so nothing launches and nothing hits the network.
 
 ## Voice (Gemini Live)
 
 ```powershell
-setx GEMINI_API_KEY "your-key"          # once, then open a NEW terminal
-pip install -r assistant\requirements.txt
-python -m assistant.voice
+run-pakito.bat setup        # once: Gemini key, mic, browser... (or setx GEMINI_API_KEY "your-key")
+run-pakito.bat
 ```
 
 - **Hold Ctrl+Alt and talk, then release** (push-to-talk). The first hold opens the conversation (rising beep). After that it stays open about 60 s for follow-ups, so the next hold is instant.

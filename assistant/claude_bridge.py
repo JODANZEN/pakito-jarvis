@@ -26,11 +26,10 @@ from pathlib import Path
 from typing import Callable
 
 SYSTEM = (
-    "You're answering a question Jose asked his voice assistant (Pakito). He's a CS + Physics "
-    "student at ASU. Start with a SPOKEN answer of at most 80 words: plain sentences, no markdown, "
-    "no lists, it will be read aloud. Then, only if useful, add a line '---' and fuller detail "
-    "(markdown OK) that goes to his notes. For school: help him organize and understand, don't "
-    "do graded work for him."
+    "You're answering a question {who} asked their voice assistant (Pakito).{about} Start with a SPOKEN answer of "
+    "at most 80 words: plain sentences, no markdown, no lists, it will be read aloud. Then, only if useful, add a "
+    "line '---' and fuller detail (markdown OK) that goes to their notes. For school: help them organize and "
+    "understand, don't do graded work for them."
 )
 KEEP_JOBS = 40
 
@@ -114,8 +113,10 @@ def _describe(name: str, inp: dict) -> dict:
 
 class ClaudeBridge:
     def __init__(self, cfg: dict, data_dir: Path, notify: Callable[[str, str], None],
-                 runner=default_runner, clock: Callable[[], float] = time.time, threaded: bool = True):
+                 runner=default_runner, clock: Callable[[], float] = time.time, threaded: bool = True,
+                 who: str = "the user", about: str = ""):
         self.cfg = cfg
+        self.system = SYSTEM.format(who=who, about=f" About them: {about.strip()}" if about and about.strip() else "")
         self.dir = Path(data_dir) / "Claude"
         self.work = Path(data_dir) / "state" / "claude_workspace"  # neutral cwd: no repo CLAUDE.md/hooks
         self.ledger = Path(data_dir) / "state" / "jobs.json"
@@ -210,7 +211,7 @@ class ClaudeBridge:
         return cmd
 
     def _ask_flags(self) -> list[str]:
-        return ["--append-system-prompt", SYSTEM, "--permission-mode", "dontAsk",
+        return ["--append-system-prompt", self.system, "--permission-mode", "dontAsk",
                 "--allowedTools", self.cfg.get("allowed_tools", "WebSearch,WebFetch")]
 
     def command(self, question: str, context: str | None, image: str | None = None) -> list[str] | None:

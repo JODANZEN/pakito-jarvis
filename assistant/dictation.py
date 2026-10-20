@@ -69,7 +69,7 @@ def to_wav(frames: list[bytes], rate: int = RATE) -> bytes:
 
 
 class Recorder:
-    """Records the default mic on its own thread between start() and stop()."""
+    """Records the mic (voice.mic in config, else the default) on its own thread between start() and stop()."""
 
     def __init__(self):
         self.frames: list[bytes] = []
@@ -78,12 +78,13 @@ class Recorder:
         self.started_at = 0.0
 
     def start(self) -> None:
-        from .voice import shared_pyaudio
+        from .voice import pick_mic, shared_pyaudio
         import pyaudio
         pa = shared_pyaudio()
         self.frames, self.started_at = [], time.time()
         self._stop.clear()
-        stream = pa.open(format=pyaudio.paInt16, channels=1, rate=RATE, input=True, frames_per_buffer=CHUNK)
+        stream = pa.open(format=pyaudio.paInt16, channels=1, rate=RATE, input=True, frames_per_buffer=CHUNK,
+                         input_device_index=pick_mic(pa)["index"])
 
         def run():
             try:

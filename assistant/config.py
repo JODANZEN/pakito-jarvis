@@ -7,8 +7,17 @@ import os
 from pathlib import Path
 
 DEFAULTS: dict = {
-    # The LIVE vault. Override with env PAKITO_VAULT or config.local.json.
-    "vault_path": r"C:\Users\jdsn2\OneDrive\Second Brain",
+    # Where Pakito keeps your notes, tasks, routines and logs (plain Markdown). Point it at an Obsidian vault if you
+    # have one (it then uses an "Assistant" folder and the vault's inbox/). Override with env PAKITO_VAULT,
+    # config.local.json, or `run-pakito.bat setup`.
+    "vault_path": "~/Documents/Pakito",
+    # Who Pakito is talking to. Set by `run-pakito.bat setup`.
+    "user": {
+        "name": None,                 # e.g. "Jose". None = "the user"
+        "about": "",                  # one line Pakito and Claude get, e.g. "He's a CS + Physics student at ASU."
+    },
+    # Gemini key (free: https://aistudio.google.com/apikey). The GEMINI_API_KEY env var wins if both are set.
+    "gemini_api_key": None,
     # Folder inside the vault where routines + logs live.
     "assistant_folder": "Assistant",
     # Browser for web links: "auto" = Opera GX if installed, else the Windows default.
@@ -19,12 +28,8 @@ DEFAULTS: dict = {
     "home_airport": "PHX",            # default origin for flight searches
     "default_music": "lofi beats",    # what "pon música" plays when you don't say what
     # PDFs Pakito can open by name, optionally at a page ("open Taylor page 160").
-    "books": {
-        "taylor": {
-            "path": r"C:\Users\jdsn2\Downloads\pdfcoffee.com_john-taylor-classical-mechanics-pdf-pdf-free.pdf",
-            "about": "Taylor, Classical Mechanics (PHY 310 textbook)",
-        },
-    },
+    # e.g. {"taylor": {"path": "C:/.../taylor.pdf", "about": "Taylor, Classical Mechanics"}}
+    "books": {},
     # "Pon un podcast": newest unplayed episodes from these (YouTube RSS: channel_id=... or playlist_id=...).
     "podcasts": [
         {"name": "Modern Wisdom (Chris Williamson)", "feed": "channel_id=UCIaH-gZIVC432YRjNVvnyCA",
@@ -47,11 +52,6 @@ DEFAULTS: dict = {
         "vs code": "code",
         "code": "code",
         "spotify": "spotify:",
-        "canvas": "https://canvas.asu.edu",
-        "pwn college": "https://pwn.college",
-        "perusall": "https://app.perusall.com",
-        "edfinity": "https://edfinity.com",
-        "matlab": "matlab",
         "obsidian": "obsidian://open",
         "gmail": "https://mail.google.com",
         "calendar": "https://calendar.google.com",
@@ -142,7 +142,26 @@ def load_config(path: str | os.PathLike | None = None) -> dict:
         cfg = _merge(cfg, json.loads(local.read_text(encoding="utf-8")))
     if os.environ.get("PAKITO_VAULT"):
         cfg["vault_path"] = os.environ["PAKITO_VAULT"]
+    cfg["vault_path"] = os.path.expandvars(os.path.expanduser(str(cfg["vault_path"])))
     return cfg
+
+
+def user_name(cfg: dict) -> str:
+    return ((cfg.get("user") or {}).get("name") or "").strip() or "the user"
+
+
+def user_line(cfg: dict) -> str:
+    """'Ana (I study biology at UNAL)': who Pakito is helping, with their own line about themselves."""
+    about = ((cfg.get("user") or {}).get("about") or "").strip()
+    return user_name(cfg) + (f" ({about.rstrip('.')})" if about else "")
+
+
+def gemini_key(cfg: dict) -> str | None:
+    """The key, from GEMINI_API_KEY or config.local.json; also exports it so genai.Client() finds it."""
+    key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY") or cfg.get("gemini_api_key")
+    if key and not os.environ.get("GEMINI_API_KEY") and not os.environ.get("GOOGLE_API_KEY"):
+        os.environ["GEMINI_API_KEY"] = key
+    return key
 
 
 def data_dir(cfg: dict) -> Path:

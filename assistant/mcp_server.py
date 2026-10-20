@@ -82,8 +82,8 @@ class Relay:
             result = {"protocolVersion": params.get("protocolVersion", "2025-06-18"),
                       "capabilities": {"tools": {}},
                       "serverInfo": {"name": "pakito", "version": "0.1"},
-                      "instructions": "Pakito is Jose's PC assistant. These tools act on his real computer and "
-                                      "his real focus timer / task list, shared with his voice assistant."}
+                      "instructions": "Pakito is the user's PC assistant. These tools act on their real computer and "
+                                      "their real focus timer / task list, shared with their voice assistant."}
         elif method == "ping":
             result = {}
         elif method == "tools/list":
