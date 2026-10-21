@@ -88,9 +88,21 @@ class FocusTrainer:
 
     @property
     def locked(self) -> bool:
+        self.catch_up()                       # the blocker polls this: a block the PC slept through unlocks
         return self.phase == "focus" and bool(self.block and self.block.get("lockin"))
 
+    def catch_up(self) -> None:
+        """Finish a block/break whose time already passed. Timers stall while the PC sleeps (a 58-min block from
+        9 pm ended at 7 am), so every status check also checks the wall clock."""
+        with self._lock:
+            now = self.clock()
+            if self.phase == "focus" and self.block and now >= self.block["start"] + self.block["planned_min"] * 60:
+                self._on_focus_done(at=self.block["start"] + self.block["planned_min"] * 60)
+            if self.phase == "break" and self.break_ends is not None and now >= self.break_ends:
+                self._on_break_done(quiet=now - self.break_ends > 600)
+
     def start(self, minutes: float | None = None, label: str | None = None, lockin: bool = False) -> dict:
+        self.catch_up()
         with self._lock:
             if self.phase == "focus":
                 if lockin and not self.block.get("lockin"):        # "lock in" mid-block: upgrade, don't restart
@@ -124,6 +136,7 @@ class FocusTrainer:
                     "lockin": bool(lockin)}
 
     def distracted(self, note: str | None = None) -> dict:
+        self.catch_up()
         with self._lock:
             if self.phase != "focus":
                 return {"error": "No focus block running."}
@@ -132,6 +145,7 @@ class FocusTrainer:
             return {"distractions": len(self.block["distractions"]), "at_min": round(at, 1)}
 
     def stop(self) -> dict:
+        self.catch_up()
         with self._lock:
             if self.phase == "focus":
                 rec = self._finish(completed=False)
@@ -146,6 +160,7 @@ class FocusTrainer:
             return {"error": "Nothing running."}
 
     def status(self) -> dict:
+        self.catch_up()
         with self._lock:
             out = {"phase": self.phase, "level": self.level}
             if self.phase == "focus":
@@ -182,11 +197,11 @@ class FocusTrainer:
         }
 
     # ---------- internals ----------
-    def _on_focus_done(self) -> None:
+    def _on_focus_done(self, at: float | None = None) -> None:
         with self._lock:
             if self.phase != "focus":
                 return
-            rec = self._finish(completed=True)
+            rec = self._finish(completed=True, at=at)
             n = self.state["completed_since_long_break"]
             if n >= self.cfg["long_break_every"]:
                 brk = float(self.cfg["long_break_min"])
@@ -195,25 +210,26 @@ class FocusTrainer:
             else:
                 brk = float(max(self.cfg["min_break_min"], round(rec["planned_min"] * self.cfg["break_ratio"])))
             self.phase = "break"
-            self.break_ends = self.clock() + brk * 60
-            self._schedule(brk * 60, self._on_break_done)
+            self.break_ends = (at or self.clock()) + brk * 60      # a late catch-up keeps the real schedule
+            self._schedule(max(0.0, self.break_ends - self.clock()), self._on_break_done)
             up = " Level up." if rec["level_after"] > rec["level_before"] else ""
             self.notify("Block done ✓", f"{brk:g} min break. Next block: {self.level} min.{up}")
             self._emit("break")
 
-    def _on_break_done(self) -> None:
+    def _on_break_done(self, quiet: bool = False) -> None:
         with self._lock:
             if self.phase != "break":
                 return
             self.phase = "idle"
             self.break_ends = None
-            self._timer = None
-            self.notify("Break over", f"Next block is {self.level} min. Say 'focus' when you're ready.")
+            self._cancel()
+            if not quiet:                            # long past (the PC slept through it): no stale toast
+                self.notify("Break over", f"Next block is {self.level} min. Say 'focus' when you're ready.")
             self._emit("idle")
 
-    def _finish(self, completed: bool) -> dict:
+    def _finish(self, completed: bool, at: float | None = None) -> dict:
         b = self.block
-        end = self.clock()
+        end = at if at is not None else self.clock()
         actual = min((end - b["start"]) / 60, b["planned_min"]) if completed else (end - b["start"]) / 60
         c = self.cfg
         before = self.level

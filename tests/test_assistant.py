@@ -900,10 +900,10 @@ def test_open_claude_code_in_new_terminal(env, tmp_path, monkeypatch):
 def test_lockin_mid_block_upgrades_instead_of_restarting(env):
     hub, clock, *_ = env
     hub.call("start_focus", {"label": "AWS"})
-    clock.advance(20)
+    clock.advance(12)
     r = hub.call("start_focus", {"lockin": True, "label": "AWS con lock-in"})
     assert r["upgraded"] and hub.focus.locked
-    assert hub.focus.status()["remaining_min"] == pytest.approx(hub.focus.block["planned_min"] - 20)  # same block
+    assert hub.focus.status()["remaining_min"] == pytest.approx(hub.focus.block["planned_min"] - 12)  # same block
     assert "NOT connected" in r["site_blocker"]                                # no extension check-ins yet
     hub.blocker.ext_seen = clock()
     hub.focus.stop()
@@ -1006,3 +1006,52 @@ def test_recent_survives_long_results_logged_as_text(env):
     hub.events.append({"ts": hub.clock(), "tool": "run_routine", "ok": True, "args": {"name": "lock in"},
                        "result": "{'routine': 'lock in', ...}"})
     assert any("lock in" in l for l in hub.recent())
+
+
+
+def test_block_ends_on_time_even_if_the_timer_stalled(env):
+    """Oct 14: a 58-min block from 9:02 pm only ended at 7:09 am (the PC slept), so 'start focus' got refused."""
+    hub, clock, _, notes = env
+    hub.call("start_focus", {"minutes": 58, "label": "noche"})
+    clock.advance(60 * 10)                               # slept 10 h; the FakeTimer never fired
+    st = hub.focus.status()
+    assert st["phase"] == "idle"                         # block done and the break long over
+    rec = hub.focus.log.read()[-1]
+    assert rec["completed"] and rec["actual_min"] == 58      # ended on schedule, not when the PC woke up
+    assert not any("Break over" in t for t, m in notes)  # no stale toast at 7 am
+    assert hub.call("start_focus", {"label": "mañana"})["started"]
+
+
+def test_catch_up_mid_break_keeps_the_real_break_end(env):
+    hub, clock, _, _ = env
+    hub.call("start_focus", {})                          # 20 min level -> 5 min break
+    clock.advance(22)
+    st = hub.focus.status()
+    assert st["phase"] == "break" and st["break_remaining_min"] == pytest.approx(3, abs=0.1)
+
+
+def test_podcast_named_directly_without_options():
+    """Oct 7: 'Dana White Diary of a CEO' failed because podcast_options hadn't run first."""
+    from assistant.podcasts import Podcasts
+    eps = {"Diary of a CEO": [{"id": "1", "show": "Diary of a CEO", "title": "Dana White: Building the UFC",
+                               "url": "u1", "published": 2},
+                              {"id": "2", "show": "Diary of a CEO", "title": "Sleep scientist", "url": "u2",
+                               "published": 1}],
+           "Modern Wisdom": [{"id": "3", "show": "Modern Wisdom", "title": "Sam Sulek - Bodybuilding", "url": "u3",
+                              "published": 3}]}
+    p = Podcasts([{"name": n, "feed": n} for n in eps], heard={"1"})
+    p._episodes = lambda s: eps[s["name"]]
+    assert p.pick("Dana White Diary of a CEO")["id"] == "1"          # found even though he heard it
+    assert p.pick("el de Sam Sulek")["id"] == "3"
+    assert p.pick("2") is None and p.pick("algo que no existe aquí") is None
+
+
+def test_add_task_dedupe_doesnt_swallow_longer_tasks(tmp_path):
+    from assistant.tasks import LocalTasks
+    t = LocalTasks(tmp_path / "Tasks.md")
+    t.add("Study")
+    assert t.add("study for two exams")["added"]                # Oct 17: was dropped as a duplicate
+    assert t.add("study")["exists"]
+    t.add("Aplicar a internships")
+    assert t.add("aplicar a internships hoy")["exists"]
+    assert t.complete("study for two", "2026-10-20")["completed"] == "study for two exams"

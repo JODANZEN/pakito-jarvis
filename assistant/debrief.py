@@ -181,7 +181,8 @@ def end_day(hub) -> dict:
         s["dream_questions"] = qs
         s["next"] = s["next"].replace("Then ask if he wants to do the examen.",
             "Then ask him the dream_questions, one at a time (they come from his Second Brain's daily dream; just "
-            "listen, never answer for him). Then ask if he wants to do the examen.")
+            "listen, never answer for him), saving each answer with dream_answer(id, answer). Then ask if he "
+            "wants to do the examen.")
     return s
 
 
@@ -203,23 +204,83 @@ def dream_line(hub) -> str | None:
     return d["line"].strip()
 
 
-def take_dream_questions(hub, n: int = 2) -> list[str]:
-    """Questions the daily dream wants answered in his own words (state/dream_questions.json, written by the dream).
-    Hands out up to n not-yet-asked ones and marks them asked; his answers land in the transcript, where the dream
-    picks them up."""
-    p = hub.dir / "state" / "dream_questions.json"
+def _dq_path(hub):
+    return hub.dir / "state" / "dream_questions.json"
+
+
+def _dq_load(hub) -> list[dict]:
     try:
-        qs = json.loads(p.read_text(encoding="utf-8"))
+        qs = json.loads(_dq_path(hub).read_text(encoding="utf-8"))
+        return [q for q in qs if isinstance(q, dict)] if isinstance(qs, list) else []
     except Exception:
         return []
+
+
+def _dq_save(hub, qs: list[dict]) -> None:
+    try:
+        _dq_path(hub).write_text(json.dumps(qs, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _dq_open(q: dict) -> bool:
+    """Still waiting for his answer: the dream hasn't filed one ("answered") and Pakito hasn't heard one."""
+    return bool((q.get("q") or "").strip()) and not q.get("answered") and not q.get("pakito_heard")
+
+
+def open_dream_questions(hub) -> list[dict]:
+    return [{"id": q.get("id"), "q": q["q"].strip(), "why": q.get("why", "")} for q in _dq_load(hub) if _dq_open(q)]
+
+
+def offer_dream_question(hub, cooldown_h: float = 4) -> dict | None:
+    """The one question this conversation may ask: the least recently offered open one, at most once every
+    cooldown_h hours, so quick commands don't turn into an interview."""
+    qs = _dq_load(hub)
+    now = hub.clock()
+    live = [q for q in qs if _dq_open(q)]
+    if not live:
+        return None
+    last = max((q.get("offered_ts", 0) for q in live), default=0)
+    if now - last < cooldown_h * 3600:
+        return None
+    q = min(live, key=lambda q: q.get("offered_ts", 0))
+    q["offered_ts"] = now
+    _dq_save(hub, qs)
+    return {"id": q.get("id"), "q": q["q"].strip()}
+
+
+def answer_dream_question(hub, qid: str | None, answer: str) -> dict:
+    """Save his answer (his words) where the dream reads it; the dream files it and marks it answered."""
+    qs = _dq_load(hub)
+    live = [q for q in qs if _dq_open(q)]
+    q = next((q for q in live if qid and str(q.get("id")) == str(qid)), None)
+    if q is None and qid:
+        ref = str(qid).lower()
+        q = next((q for q in live if ref in q["q"].lower()), None)
+    if q is None and len(live) == 1:
+        q = live[0]
+    if q is None:
+        return {"error": "Which question? Call dream_questions for the ids.", "open": open_dream_questions(hub)}
+    if not (answer or "").strip():
+        return {"error": "Pass his answer, in his words."}
+    stamp = datetime.fromtimestamp(hub.clock()).isoformat(timespec="seconds")
+    q.setdefault("asked_at", stamp)
+    q["pakito_heard"] = answer.strip()
+    q["pakito_heard_at"] = stamp
+    _dq_save(hub, qs)
+    return {"saved": q.get("id"), "left": len(live) - 1}
+
+
+def take_dream_questions(hub, n: int = 2) -> list[str]:
+    """For the debrief: up to n open questions (not answered by the dream, not already answered to Pakito)."""
+    qs = _dq_load(hub)
     out = []
+    stamp = datetime.fromtimestamp(hub.clock()).isoformat(timespec="seconds")
     for q in qs:
-        if not q.get("asked_at") and len(out) < n and (q.get("q") or "").strip():
-            q["asked_at"] = datetime.now().isoformat(timespec="seconds")
-            out.append(q["q"].strip())
+        if _dq_open(q) and len(out) < n:
+            q.setdefault("asked_at", stamp)
+            q["offered_ts"] = hub.clock()
+            out.append(f"[{q.get('id')}] {q['q'].strip()}")
     if out:
-        try:
-            p.write_text(json.dumps(qs, ensure_ascii=False, indent=2), encoding="utf-8")
-        except Exception:
-            pass
+        _dq_save(hub, qs)
     return out

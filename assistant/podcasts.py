@@ -8,6 +8,8 @@ Sources, tried in order per show:
 """
 from __future__ import annotations
 
+import re
+
 import json
 import time
 import urllib.parse
@@ -95,6 +97,10 @@ def age(published: str, now: float) -> str:
     return "today" if days <= 0 else "yesterday" if days == 1 else f"{days} days ago"
 
 
+STOP = {"the", "one", "uno", "con", "del", "los", "las", "que", "pon", "ponme", "episodio", "episode", "podcast",
+        "with", "por", "para", "una", "ese", "este", "nuevo", "new", "latest", "último"}
+
+
 class Podcasts:
     def __init__(self, shows: list[dict], heard: set[str], fetcher=fetch, clock=time.time,
                  api_key: str | None = None, spotify=None, api=youtube_api, sp_eps=spotify_episodes):
@@ -161,10 +167,30 @@ class Podcasts:
             out["note"] = "Nothing new that he hasn't played."
         return out
 
-    def pick(self, choice: str | float) -> dict | None:
-        """1-based number, or words from the title/show ('the David Goggins one')."""
-        if not self.choices:
+    def find(self, words: str) -> dict | None:
+        """An episode he names directly ('el de Dana White en Diary of a CEO'), searched across every show's
+        recent episodes, heard or not. Needs most of his meaningful words in the show + title."""
+        ws = [w for w in re.findall(r"\w+", words.lower()) if len(w) > 2 and w not in STOP]
+        if not ws:
             return None
+        best, best_score = None, 0.0
+        for s in self.shows:
+            try:
+                eps = self._episodes(s)
+            except Exception:
+                continue
+            for e in eps:
+                hay = f"{e['show']} {e['title']}".lower()
+                score = sum(w in hay for w in ws) / len(ws)
+                if score > best_score:
+                    best, best_score = e, score
+        return best if best_score >= 0.6 else None
+
+    def pick(self, choice: str | float) -> dict | None:
+        """1-based number, or words from the title/show ('the David Goggins one'). Without offered options (or
+        no match among them), searches all shows."""
+        if not self.choices:
+            return None if isinstance(choice, (int, float)) or str(choice).strip().isdigit() else self.find(str(choice))
         try:
             i = int(float(choice)) - 1
             return self.choices[i] if 0 <= i < len(self.choices) else None
@@ -175,7 +201,7 @@ class Podcasts:
                        0.9 if any(w in e["title"].lower() for w in c.split() if len(w) > 3) else 0), e)
                   for e in self.choices]
         best = max(scored, key=lambda x: x[0])
-        return best[1] if best[0] > 0.4 else None
+        return best[1] if best[0] > 0.4 else self.find(str(choice))
 
 
 def setup() -> None:

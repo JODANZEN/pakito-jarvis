@@ -54,7 +54,9 @@ class LocalTasks(TaskStore):
     def done_on(self, day: str) -> list[str]:
         return [i["text"] for i in self._read() if i["done"] and i.get("day") == day]
 
-    def _find(self, items: list[dict], text: str, open_only: bool = True):
+    def _find(self, items: list[dict], text: str, open_only: bool = True, strict: bool = False):
+        """strict (adding): a short existing task must not swallow a longer new one ('Study' vs 'study for two
+        exams'); containment only counts when the shorter one carries most of the longer one's words."""
         q = _norm(text)
         best, score = None, 0.0
         for i in items:
@@ -63,15 +65,18 @@ class LocalTasks(TaskStore):
             t = _norm(i["text"])
             s = SequenceMatcher(None, q, t).ratio()
             if q and (q in t or t in q):
-                s = max(s, 0.85)
+                short, long_ = sorted((q.split(), t.split()), key=len)
+                if not strict or (len(short) >= 2 and len(short) / len(long_) >= 0.6):
+                    s = max(s, 0.85 + 0.1 * len(short) / max(1, len(long_)))   # the closest containment wins
             if s > score:
                 best, score = i, s
-        return best if score >= 0.6 else None
+        return best if score >= (0.75 if strict else 0.6) else None
 
     def add(self, text: str) -> dict:
         items = self._read()
-        if self._find(items, text):
-            return {"exists": True, "task": self._find(items, text)["text"]}
+        hit = self._find(items, text, strict=True)
+        if hit:
+            return {"exists": True, "task": hit["text"]}
         items.append({"done": False, "text": text.strip(), "day": None})
         self._write(items)
         return {"added": text.strip()}

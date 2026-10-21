@@ -185,6 +185,8 @@ class Hub:
             self.start_apps.preload()
         self.conversations = JsonlLog(self.dir / "logs" / "conversations.jsonl")
         self.latency = JsonlLog(self.dir / "logs" / "latency.jsonl")       # seconds from letting go to its voice
+        self.note_taker = None                    # voice: saves notes from his own recording (voice_notes.py)
+        self.pending_note_audio: bytes | None = None   # voice puts his recent turns here right before take_note
         self.tools: dict[str, Tool] = {}
         self._register_builtins()
 
@@ -442,12 +444,17 @@ class Hub:
         def podcast_options(creator: str | None = None):
             return self.podcasts.options(creator)
 
-        @self.tool("play_podcast", "Play the episode he picked from podcast_options: a number (1-3) or words from the title. "
+        @self.tool("play_podcast", "Play an episode: a number (1-3) from podcast_options, or words from the title/guest/show "
+                   "(works without podcast_options too: 'el de Dana White en Diary of a CEO'). "
                    "where = youtube or spotify (default from his settings).",
                    _obj({"choice": S, "where": S}, ["choice"]))
         def play_podcast(choice: str, where: str | None = None):
             ep = self.podcasts.pick(choice)
             if not ep:
+                if not str(choice).strip().isdigit() and len(str(choice).split()) >= 2:   # named one we don't have
+                    self.launch("https://www.youtube.com/results?search_query=" + urllib.parse.quote(str(choice)))
+                    return {"searching_youtube": choice, "note": "Not in the recent episodes of his shows; opened a "
+                                                                 "YouTube search for it."}
                 return {"error": "Couldn't tell which one; call podcast_options first or say the number."}
             where = (where or self.cfg.get("podcast_player", "youtube")).lower()
             self.podcasts.heard.add(ep["id"])
@@ -604,12 +611,43 @@ class Hub:
             return {"typed": bool(ok), "chars": len(text)} if ok else {"error": "Couldn't type it (clipboard busy)."}
 
         @self.tool("take_note", "Save a note to his second brain's inbox ('toma nota', 'anota esta idea', 'apunta "
-                   "que…'): ideas, thoughts, things that come to mind. text = his words as he said them (clean up "
-                   "filler only, don't rewrite or summarize). title = 2-5 word topic. kind: idea | note | thought. "
-                   "Not for to-dos (add_task) or things to bring back later (remember).",
-                   _obj({"text": S, "title": S, "kind": S}, ["text"]))
-        def take_note(text: str, title: str | None = None, kind: str = "note"):
+                   "que…'): ideas, thoughts, things that come to mind. Call it AFTER he has said the note. In voice, "
+                   "Pakito saves his own words from the recording, so don't retype long notes: give title (2-5 word "
+                   "topic), kind (idea | note | thought) and turns = how many of his last turns hold the note (1 = "
+                   "the turn he just said; 2 if he said 'toma nota' first and the content after). text = optional, "
+                   "a one-line gist (or the note itself when typed). Not for to-dos (add_task) or things to bring "
+                   "back later (remember).",
+                   _obj({"text": S, "title": S, "kind": S, "turns": N}))
+        def take_note(text: str | None = None, title: str | None = None, kind: str = "note", turns: float = 1):
+            audio, self.pending_note_audio = self.pending_note_audio, None
+            if audio is not None and self.note_taker is not None:
+                from .voice_notes import MIN_NOTE_SPEECH_SEC, speech_seconds_pcm
+                if speech_seconds_pcm(audio) >= MIN_NOTE_SPEECH_SEC:
+                    r = self.note_taker.submit(audio, title, kind, fallback=text or "")
+                    return {**r, "from": "his own recording (word for word, nothing summarized)",
+                            "say": "Tell him it's being saved; it lands in his inbox in a few seconds."}
+                if not (text or "").strip():
+                    return {"error": "He hasn't said the note yet. Tell him you're listening, wait until he says "
+                                     "it, then call take_note again."}
+            if not (text or "").strip():
+                return {"error": "He hasn't said the note yet. Tell him you're listening, then call take_note "
+                                 "after he says it."}
             return self.inbox.add(text, title, kind)
+
+        @self.tool("dream_questions", "Questions his Second Brain (the nightly dream) wants him to answer about himself "
+                   "and his projects. Use when he asks '¿tienes preguntas para mí?' / 'what did the dream ask?'. Ask "
+                   "one at a time, in Spanish, and save each answer with dream_answer.")
+        def dream_questions():
+            from .debrief import open_dream_questions
+            qs = open_dream_questions(self)
+            return {"questions": qs} if qs else {"questions": [], "note": "No open questions right now."}
+
+        @self.tool("dream_answer", "Save his answer to one of the dream's questions, in his words (clean filler only, "
+                   "never answer for him). id from dream_questions or the prompt.",
+                   _obj({"id": S, "answer": S}, ["answer"]))
+        def dream_answer(answer: str, id: str | None = None):
+            from .debrief import answer_dream_question
+            return answer_dream_question(self, id, answer)
 
         @self.tool("remember", "Remember something and bring it back later ('recuérdame…', 'remember that…'). "
                    "due = when to remind him, ISO local time like 2026-10-20T09:00 (work it out from 'el martes', "

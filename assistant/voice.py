@@ -16,6 +16,7 @@ from __future__ import annotations
 import array
 import asyncio
 import collections
+import contextlib
 import math
 import json
 import re
@@ -46,6 +47,7 @@ VOICE_DEFAULTS = {
     "barge_in": False,           # toggle mode only. True with headphones: interrupt it mid-sentence.
                                  # False: mic muted while it talks. (PTT never has echo: mic only sends while held)
     "location": None,            # e.g. "Tempe, AZ": for weather and "near me" (set by run-pakito.bat setup)
+    "long_sessions": True,       # reconnect when Gemini drops a connection (~10 min); `check full` tests it
     "mic": None,                 # part of the mic's name (run-pakito.bat setup lists them). None = Windows default
     "google_search": True,       # False if your free tier blocks it -> uses the free `lookup` tool instead
     "pause_on_calls": True,      # another app using the mic (Zoom, Meet, WhatsApp...) -> Pakito hangs up and stays off it
@@ -111,7 +113,13 @@ def system_prompt(hub: Hub, vcfg: dict) -> str:
         claude_txt += ("\nThings he asked you to check on later. Ask about ONE per conversation, briefly, after "
                        "handling what he asked; save his answer with reminder_done(item, answer): " +
                        "; ".join(f"[{r['id']}] {r['what']}" for r in ask[:3]))
-    from .debrief import dream_line
+    from .debrief import dream_line, offer_dream_question
+    dq = None if st["phase"] == "focus" and st.get("lockin") else offer_dream_question(hub)
+    if dq:
+        claude_txt += ("\nHis Second Brain (the nightly dream) has a question for him. After handling what he asked, "
+                       "if he isn't in a hurry, ask it once, in Spanish, in your own short words; if he answers, call "
+                       f"dream_answer(id, answer) with his words. If he says later / not now, drop it: [{dq['id']}] "
+                       f"{dq['q'][:300]}")
     dream = dream_line(hub)
     if dream:
         claude_txt += ("\nFrom last night's dream (Claude processed his logs while he slept). After handling what he "
@@ -143,8 +151,11 @@ How to act:
 - If he asks about something on his screen ("mira esto", "¿qué es esto?", "explain this error"), call
   look_at_screen and answer from the image. "Mira esta parte" = area region. "Explícamelo bien / paso a paso" =
   claude=true too: give the quick version yourself, Claude's full one comes later.
-- "Toma nota / anota esta idea" -> take_note (his words, into his inbox). "Recuérdame…" -> remember (with due if
-  he gives a time; without it, you'll ask him about it later). "Agrega a mis tareas" -> add_task.
+- "Toma nota / anota esta idea" -> take_note, called AFTER he has said the note: Pakito saves his exact words from
+  the recording, so pass just title + kind (+ turns=2 if he said "toma nota" in one turn and the note in the next).
+  If he only announced a note ("vamos a hacer una nota"), say "dale, te escucho" and wait. Never retype a long
+  note. "Recuérdame…" -> remember (with due if he gives a time; without it, you'll ask him about it later).
+  "Agrega a mis tareas" -> add_task.
 - His calendar: call whats_coming for "¿qué tengo hoy?" / "¿qué viene?". If an exam or project is today or
   tomorrow and he hasn't heard about it in this conversation, mention it once, in one short sentence. You're his
   organizer: dates and what to study, not homework help.
@@ -161,6 +172,9 @@ Done recently (oldest first):
 {recent_txt}{claude_txt}{coming_txt}"""
 
 
+LONG_SESSIONS = {"ok": True}      # turned off for this run if the model rejects compression/resumption
+
+
 def live_config(hub: Hub, vcfg: dict) -> dict:
     cfg = {
         "response_modalities": ["AUDIO"],
@@ -169,6 +183,12 @@ def live_config(hub: Hub, vcfg: dict) -> dict:
         "output_audio_transcription": {},
         "tools": [{"function_declarations": [*hub.declarations(), END_TOOL]}],
     }
+    if LONG_SESSIONS["ok"] and vcfg.get("long_sessions", True):
+        # long talks (debrief + examen, long notes) would hit the context limit and drop: let Gemini forget the
+        # oldest part instead. And a connection lasts ~10 min: a resumption handle lets Pakito reconnect to the
+        # same conversation.
+        cfg["context_window_compression"] = {"sliding_window": {}}
+        cfg["session_resumption"] = {}
     if vcfg.get("google_search", True):
         cfg["tools"].insert(0, {"google_search": {}})
     if vcfg.get("mode", "ptt") == "ptt":
@@ -215,6 +235,15 @@ class Conversation:
         self.release_t = 0.0
         self.closing_turn = False                # let go, still sending the post-roll tail
         self.peak = 0.0                          # loudest sample this hold (0..1), for the level readout
+        # his own audio, per turn: take_note saves from this, and a long turn that never got an answer is
+        # saved on its own when the conversation ends (voice_notes.py). Nothing is sent anywhere from here.
+        self.turns: collections.deque = collections.deque(maxlen=8)
+        self.cur_turn: list[bytes] | None = None
+        self.failed: BaseException | None = None   # the connection died mid-conversation
+        self.resume_handle: str | None = None      # from Gemini: lets a dropped connection pick up where it was
+        self.going_away = False                    # Gemini warned the connection is about to close
+        self.reconnect = None                      # async (handle) -> new session; set by converse()
+        self.reconnects = 0
 
     # ---- push-to-talk ----
     def press(self) -> None:
@@ -226,7 +255,9 @@ class Conversation:
             self.closing_turn = False
             self.last_activity = self.clock()
             return
+        self._close_turn()
         self.pre = list(self.ring)
+        self.cur_turn = list(self.ring)
         self.started = False
         self.last_activity = self.clock()
         while not self.out_q.empty():            # holding the key cuts it off mid-sentence
@@ -252,14 +283,39 @@ class Conversation:
             self.closing_turn = True             # mic_loop sends the tail, then activity_end
         elif not tap and self.pre:
             self.pending_turn = self.pre         # spoke before the connection was ready
+            self._close_turn()
+        elif tap:
+            self.cur_turn = None                 # a tap isn't a turn
         self.pre = []
         return tap
 
+    def _close_turn(self) -> None:
+        if self.cur_turn:
+            self.turns.append({"pcm": b"".join(self.cur_turn), "t": self.clock(), "replied": False, "saved": False})
+        self.cur_turn = None
+
+    def _replied(self) -> None:
+        if self.turns and not self.turns[-1]["replied"]:
+            self.turns[-1]["replied"] = True
+
     async def _send(self, data: bytes) -> None:
-        await self.session.send_realtime_input(audio={"data": data, "mime_type": f"audio/pcm;rate={SEND_RATE}"})
+        await self._rt(audio={"data": data, "mime_type": f"audio/pcm;rate={SEND_RATE}"})
+
+    async def _rt(self, **kw) -> None:
+        """send_realtime_input that survives a dead connection: his audio is kept locally (self.turns) anyway,
+        and the receive side notices the drop and reconnects or ends the conversation."""
+        try:
+            await self.session.send_realtime_input(**kw)
+        except Exception:
+            pass
 
     # ---- server messages ----
     async def handle(self, msg) -> None:
+        sru = getattr(msg, "session_resumption_update", None)
+        if sru is not None and getattr(sru, "resumable", False) and getattr(sru, "new_handle", None):
+            self.resume_handle = sru.new_handle
+        if getattr(msg, "go_away", None) is not None:
+            self.going_away = True                # the server closes soon: reconnect quietly when it does
         sc = getattr(msg, "server_content", None)
         if sc:
             if sc.input_transcription and sc.input_transcription.text:
@@ -272,6 +328,7 @@ class Conversation:
                 for part in sc.model_turn.parts or []:
                     data = getattr(part.inline_data, "data", None) if part.inline_data else None
                     if isinstance(data, bytes):
+                        self._replied()
                         if self.sent_at is not None:
                             dt = self.clock() - self.sent_at
                             self.log(f"  ⏱ {dt:.1f}s")
@@ -303,6 +360,7 @@ class Conversation:
                 self.fresh_turn = True
         tc = getattr(msg, "tool_call", None)
         if tc and tc.function_calls:
+            self._replied()
             await self._run_tools(tc.function_calls)
 
     async def _run_tools(self, calls) -> None:
@@ -320,7 +378,11 @@ class Conversation:
                 result = {"ok": True}
             else:
                 self.hub.pet.set("think", note=f"⚙ {fc.name.replace('_', ' ')}")
+                used = self._note_audio(args) if fc.name == "take_note" else []
                 result = await asyncio.to_thread(self.hub.call, fc.name, args, "voice")
+                if isinstance(result, dict) and result.get("saving"):
+                    for t in used:
+                        t["saved"] = True
                 if fc.name == "look_at_screen" and self.hub.pending_image:
                     img, self.hub.pending_image = self.hub.pending_image, None
                     await self.session.send_realtime_input(video=types.Blob(data=img, mime_type="image/jpeg"))
@@ -330,6 +392,53 @@ class Conversation:
             responses.append(types.FunctionResponse(id=fc.id, name=fc.name, response=jsonable(result)))
         self.last_activity = self.clock()
         await self.session.send_tool_response(function_responses=responses)
+
+    def _note_audio(self, args: dict) -> list[dict]:
+        """Hand his last `turns` turns (his own audio) to take_note, so Gemini never has to retype the note."""
+        self.hub.pending_note_audio = None
+        if not self.turns or self.hub.note_taker is None:
+            return []
+        try:
+            n = max(1, min(4, int(float(args.get("turns") or 1))))
+        except (TypeError, ValueError):
+            n = 1
+        picked = [t for t in list(self.turns)[-n:] if not t["saved"]]
+        if picked:
+            self.hub.pending_note_audio = b"".join(t["pcm"] for t in picked)
+        return picked
+
+    def save_unanswered(self) -> int:
+        """End of conversation: long turns Gemini never answered get saved to the inbox from the audio."""
+        self._close_turn()
+        if self.private or self.hub.note_taker is None:
+            return 0
+        from .voice_notes import RECOVER_SPEECH_SEC, speech_seconds_pcm
+        n = 0
+        for t in self.turns:
+            if not t["replied"] and not t["saved"] and speech_seconds_pcm(t["pcm"]) >= RECOVER_SPEECH_SEC:
+                try:
+                    self.hub.note_taker.submit(t["pcm"], None, "note", recovered=True)
+                    t["saved"] = True
+                    n += 1
+                except Exception as e:
+                    log_error(self.hub, e)
+        if n:
+            self.log(f"\n  📝 Pakito no alcanzó a responder {'un turno largo' if n == 1 else f'{n} turnos largos'}: "
+                     "lo guardo en tu inbox desde el audio.")
+        return n
+
+    async def _guard(self, loop_fn) -> None:
+        """A loop that dies (the Gemini connection dropped) ends the conversation out loud, not in silence."""
+        try:
+            await loop_fn()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            if not self.done.is_set():
+                self.failed = e
+                if not (self.going_away or (self.resume_handle and self.reconnect)):
+                    log_error(self.hub, e)
+                self.done.set()
 
     # ---- loops ----
     async def mic_loop(self) -> None:
@@ -345,20 +454,25 @@ class Conversation:
             # push-to-talk
             if self.session is not None and self.pending_turn:
                 turn, self.pending_turn = self.pending_turn, None
-                await self.session.send_realtime_input(activity_start={})
+                await self._rt(activity_start={})
                 for chunk in turn:
                     await self._send(chunk)
-                await self.session.send_realtime_input(activity_end={})
+                await self._rt(activity_end={})
             if self.holding:
                 lvl = peak_level(data)
                 self.peak = max(self.peak, lvl)
                 self.hub.pet.set(level=lvl)
+                if self.cur_turn is not None:
+                    self.cur_turn.append(data)
             if not self.holding:
                 if self.started and self.closing_turn:
+                    if self.cur_turn is not None:
+                        self.cur_turn.append(data)
                     await self._send(data)                       # post-roll tail
                     if self.clock() - self.release_t >= self.vcfg.get("post_roll_sec", 0.3):
                         self.started = self.closing_turn = False
-                        await self.session.send_realtime_input(activity_end={})
+                        self._close_turn()
+                        await self._rt(activity_end={})
                     continue
                 self.ring.append(data)
                 continue
@@ -369,17 +483,25 @@ class Conversation:
                 self.pre.append(data)
                 if self.session is not None and held >= self.vcfg.get("min_hold_sec", 0.3):
                     self.started = True
-                    await self.session.send_realtime_input(activity_start={})
+                    await self._rt(activity_start={})
                     chunks, self.pre = self.pre, []
                     for chunk in chunks:
                         await self._send(chunk)
 
     async def receive_loop(self) -> None:
+        empty = 0
         while not self.done.is_set():
+            got = False
             async for msg in self.session.receive():
+                got = True
                 await self.handle(msg)
                 if self.done.is_set():
                     return
+            empty = 0 if got else empty + 1
+            if empty >= 20:                       # receive() keeps returning nothing: the socket closed quietly
+                raise ConnectionError("the Gemini connection closed")
+            if not got:
+                await asyncio.sleep(0.05)
 
     async def play_loop(self) -> None:
         while not self.done.is_set():
@@ -407,6 +529,31 @@ class Conversation:
                     self.clock() - self.last_activity > self.vcfg["idle_timeout_sec"]:
                 self.done.set()
 
+    async def _try_reconnect(self) -> bool:
+        """The connection dropped (Gemini closes each one after ~10 min): pick the same conversation back up."""
+        if self.failed is None or self.ending:
+            return False
+        e, quiet = self.failed, self.going_away
+        if self.reconnect and self.resume_handle and self.reconnects < 3:
+            try:
+                session = await self.reconnect(self.resume_handle)
+            except Exception as err:
+                log_error(self.hub, err)
+                session = None
+            if session is not None:
+                self.session, self.failed, self.going_away = session, None, False
+                self.reconnects += 1
+                self.started = False                  # a turn in progress starts over on the new connection
+                self.last_activity = self.clock()
+                self.done.clear()
+                if not quiet:
+                    self.log("\n  ↻ (se cortó la conexión con Gemini; reconectado, seguimos)")
+                return True
+        log_error(self.hub, e)
+        self.log(f"\n⚠ Se cayó la conexión con Gemini ({type(e).__name__}). Lo que dijiste no se pierde: si era "
+                 "largo, va a tu inbox. Presiona otra vez para seguir.")
+        return False
+
     # ---- Claude answers arriving mid-conversation ----
     def on_claude(self, job: dict) -> bool:
         """Called from the Claude thread. Returns True if this conversation will say it."""
@@ -428,17 +575,30 @@ class Conversation:
         self.loop = asyncio.get_running_loop()
         self.hub.claude.listeners.append(self.on_claude)
         started = time.time()
-        loops = [self.receive_loop, self.play_loop, self.watchdog] + ([] if self.mic_running else [self.mic_loop])
-        tasks = [asyncio.create_task(c()) for c in loops]
+        mic_task = None if self.mic_running else asyncio.create_task(self._guard(self.mic_loop))
         try:
-            await self.done.wait()
+            while True:
+                loops = [self.receive_loop, self.play_loop, self.watchdog]
+                tasks = [asyncio.create_task(self._guard(c)) for c in loops]
+                try:
+                    await self.done.wait()
+                finally:
+                    for t in tasks:
+                        t.cancel()
+                    await asyncio.gather(*tasks, return_exceptions=True)
+                if not await self._try_reconnect():
+                    break
         finally:
-            for t in tasks:
-                t.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
+            if mic_task:
+                mic_task.cancel()
+                await asyncio.gather(mic_task, return_exceptions=True)
             if self.on_claude in self.hub.claude.listeners:
                 self.hub.claude.listeners.remove(self.on_claude)
             self.hub.end_request()
+            try:
+                self.save_unanswered()
+            except Exception as e:
+                log_error(self.hub, e)
             # The conversation can end (cut off, crash, hang-up) before Gemini sends turn_complete for his last
             # turn; without this, what he said last never reaches the log.
             pending = self.heard.strip()
@@ -812,7 +972,27 @@ async def converse(hub: Hub, vcfg: dict, client, conv_box: dict, first_press: bo
             conv.mic_running = True
         waiting = hub.claude.undelivered()
         config = live_config(hub, vcfg)
-        async with client.aio.live.connect(model=vcfg["model"], config=config) as session:
+        stack = contextlib.AsyncExitStack()
+
+        async def reconnect(handle: str):
+            cfg2 = {**config, "session_resumption": {"handle": handle}}   # same prompt; no second dream line
+            return await stack.enter_async_context(client.aio.live.connect(model=vcfg["model"], config=cfg2))
+
+        conv.reconnect = reconnect
+        async with stack:
+            try:
+                session = await stack.enter_async_context(client.aio.live.connect(model=vcfg["model"],
+                                                                                  config=config))
+            except Exception as e:
+                if "session_resumption" not in config:
+                    raise
+                LONG_SESSIONS["ok"] = False             # this model won't take them: connect without, from now on
+                log_error(hub, e)
+                print("  (this Gemini model doesn't take long-session support; continuing without it)")
+                config = {k: v for k, v in config.items()
+                          if k not in ("session_resumption", "context_window_compression")}
+                session = await stack.enter_async_context(client.aio.live.connect(model=vcfg["model"],
+                                                                                  config=config))
             hub.claude.mark_delivered(waiting)
             conv.session = session
             connected = True
@@ -919,10 +1099,16 @@ async def main_async() -> None:
     start_console(hub)
     start_pet(cfg)
 
+    from .dictation import Transcriber
+    from .voice_notes import NoteTaker
+    transcriber = Transcriber(client, vcfg.get("dictation_model"), vcfg.get("vocabulary"))
+    hub.note_taker = NoteTaker(hub, lambda wav, prompt: transcriber(wav, prompt=prompt), vocab=transcriber.vocab,
+                               loop=loop, log=print)
+    loop.create_task(hub.note_taker.retry_pending())      # notes whose audio didn't get transcribed last time
     dictation = None
     if sys.platform == "win32" and vcfg.get("dictation", True):
-        from .dictation import Dictation, Transcriber
-        dictation = Dictation(hub, Transcriber(client, vcfg.get("dictation_model"), vcfg.get("vocabulary")),
+        from .dictation import Dictation
+        dictation = Dictation(hub, transcriber,
                               beep=beep, log=lambda *a: print("\n" + " ".join(map(str, a)) + "\n› ", end="", flush=True))
         KeyPoller(vcfg["dictation_hotkey"],
                   lambda what: loop.call_soon_threadsafe(events.put_nowait, "dict_" + what)).start()

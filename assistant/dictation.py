@@ -215,9 +215,10 @@ class Transcriber:
             pass
         return out
 
-    async def __call__(self, wav: bytes, app: str) -> str:
+    async def __call__(self, wav: bytes, app: str = "", prompt: str | None = None) -> str:
+        """prompt: a full prompt to use instead of dictation's (voice notes use a word-for-word one)."""
         from google.genai import types
-        prompt = PROMPT.format(app=app, vocab=", ".join(self.vocab))
+        prompt = prompt or PROMPT.format(app=app, vocab=", ".join(self.vocab))
         parts = [types.Part.from_bytes(data=wav, mime_type="audio/wav"), prompt]
         quick = getattr(self, "_quick", True)
         cfg = types.GenerateContentConfig(
@@ -236,10 +237,10 @@ class Transcriber:
                 err = e
                 if quick and "thinking" in str(e).lower():  # this model can't turn thinking off: retry with it on
                     self._quick = False
-                    return await self(wav, app)
+                    return await self(wav, app, prompt)
                 if self.model:
                     self.model = None
-                    return await self(wav, app)
+                    return await self(wav, app, prompt)
         raise RuntimeError(f"no transcription model worked: {err}")
 
 

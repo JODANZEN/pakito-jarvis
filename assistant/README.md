@@ -168,6 +168,11 @@ Claude Code, the Claude desktop app and later Hermes can use Pakito's tools: add
 
 ## Notes and reminders
 - **"Toma nota: …" / "anota esta idea"** saves your words as a raw capture in your vault's **inbox**, as `inbox/YYYY-MM-DD <topic>.md`. It follows the vault rules: your phrasing is kept, the note links up to Home, and the weekly sweep files it. More notes on the same topic that day go into the same file.
+  - **Long notes are safe.** Pakito keeps its own recording of what you say. When it saves a note it transcribes *that recording* word for word, in 2-minute pieces, in the background. Gemini no longer retypes (or summarizes) it. Talk for as long as you want; a toast says when it's in the inbox.
+  - You can say "toma nota" first and the note in your next turn. If you only announce it, Pakito says it's listening and waits.
+  - The audio is written to `Assistant/state/note_audio/` first and deleted once the note is saved. If transcribing fails (no internet, say), the inbox still gets a note saying so, and Pakito retries the audio the next time it starts.
+  - If a long turn never gets an answer (Gemini stuck, connection dropped), it's saved on its own as **"Nota recuperada"** when the conversation ends. Off-the-record conversations are never saved.
+- **Questions from the dream:** the nightly dream leaves questions about you and your projects in `state/dream_questions.json`. Pakito brings one up in a normal conversation (a few hours apart, never during lock-in) and still asks them in the debrief. "¿Tienes preguntas para mí?" lists them all. Your answer is saved in your words (`pakito_heard`) for the dream to file. Answered ones never come back.
 - **"Recuérdame…"**:
   - **With a time** ("el martes a las 9", "en 3 días", "mañana a las 8"): when it's due you get a toast and Pakibot pops in. Pakito keeps bringing it up in conversations until you've heard it. "Recuérdamelo mañana" snoozes it.
   - **Without a time** ("recuerda que le presté 20 a Mario"): Pakito asks you about it about 2 days later, one thing per conversation, and saves your answer.
@@ -284,7 +289,7 @@ Then say "ask Claude …", or Gemini decides to for hard questions. It runs in t
 Typed: `claude <question>`. It counts against your Claude plan's usage, and it isn't available on the free claude.ai plan.
 
 ## Tests
-`python -m pytest tests`: 167 tests. They use a fake clock and a fake Gemini session, so nothing launches and nothing hits the network.
+`python -m pytest tests`: 190 tests. They use a fake clock and a fake Gemini session, so nothing launches and nothing hits the network.
 
 ## Voice (Gemini Live)
 

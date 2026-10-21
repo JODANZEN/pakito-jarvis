@@ -6,6 +6,7 @@
     run-pakito.bat check speed    time each Live model with Pakito's real setup, keep the fastest
     run-pakito.bat check look     can your model see a screenshot? (sends a picture with a number on it)
     run-pakito.bat check dictation   pick the model that cleans up your dictation, and check it takes audio
+    run-pakito.bat check notes   record a 30 s note and show exactly what take_note would save (inbox untouched)
 
 Writes results into assistant/config.local.json.
 """
@@ -100,6 +101,9 @@ async def check_full(client) -> None:
             c["tools"] = tools
         if keep.get("voice") and "speech_config" in full:
             c["speech_config"] = full["speech_config"]
+        if keep.get("long"):
+            c["context_window_compression"] = {"sliding_window": {}}
+            c["session_resumption"] = {}
         return c
 
     steps = [
@@ -109,6 +113,7 @@ async def check_full(client) -> None:
         ("+ Pakito's tools", {"prompt": 1, "transcripts": 1, "functions": 1}),
         ("+ Google Search", {"prompt": 1, "transcripts": 1, "functions": 1, "search": 1}),
         ("Google Search alone", {"search": 1}),
+        ("+ long sessions (reconnect, no 10-min cutoff)", {"prompt": 1, "transcripts": 1, "functions": 1, "long": 1}),
     ]
     print(f"Testing Pakito's config on {model}:\n")
     results = {}
@@ -130,6 +135,15 @@ async def check_full(client) -> None:
         print("→ Everything works here. If voice still fails, it's the audio itself — tell Claude.")
     else:
         print("→ Something before Google Search fails — paste this to Claude.")
+    long_ok = results["+ long sessions (reconnect, no 10-min cutoff)"] == "OK"
+    if rest_ok:
+        local.setdefault("voice", {})["long_sessions"] = long_ok
+        save_local(local)
+        print("→ Long sessions work: dropped connections reconnect." if long_ok else
+              "→ Your model doesn't take long-session support: turned it off (conversations end at ~10 min).")
+    if any("quota" in str(results[k]).lower() for k in ("+ Google Search", "Google Search alone")):
+        print("  (Search failed on quota, not a block: the free tier's search allowance ran out for now. Run this "
+              "again tomorrow to turn it back on.)")
 
 
 def check_claude() -> None:
@@ -327,6 +341,45 @@ async def check_dictation(client) -> None:
     print("Saved it. Restart Pakito, click into any text box, hold Ctrl+Win and talk.")
 
 
+async def check_notes(client, seconds: int = 30) -> None:
+    """run-pakito.bat check notes: record a long-ish note, transcribe it the way take_note now does. Nothing is
+    saved to the inbox."""
+    import time as _t
+    from .dictation import Recorder, Transcriber
+    from .voice import MIC
+    from .voice_notes import speech_seconds_pcm, split_pcm
+    from .config import load_config
+    from .dictation import to_wav
+    cfg = load_config()
+    MIC["name"] = (cfg.get("voice") or {}).get("mic")
+    print(f"Talk for up to {seconds} s, like a real note (Enter stops early)…")
+    rec = Recorder()
+    rec.start()
+    try:
+        await asyncio.wait_for(asyncio.to_thread(input), timeout=seconds)
+    except asyncio.TimeoutError:
+        pass
+    wav, secs = rec.stop()
+    pcm = wav[44:]
+    print(f"  recorded {secs:.0f} s, {speech_seconds_pcm(pcm):.0f} s of voice, {len(split_pcm(pcm, piece_sec=12))} "
+          "piece(s) at the test's 12 s size")
+    tr = Transcriber(client, (cfg.get("voice") or {}).get("dictation_model"), (cfg.get("voice") or {}).get("vocabulary"))
+    from .voice_notes import NOTE_PROMPT
+    text_parts, t1 = [], _t.time()
+    try:
+        for piece in split_pcm(pcm, piece_sec=12):         # small pieces here so a short test still exercises it
+            if speech_seconds_pcm(piece) < 0.3:
+                continue
+            text_parts.append(await tr(to_wav([piece]), prompt=NOTE_PROMPT.format(vocab=", ".join(tr.vocab))))
+    except Exception as e:
+        print(f"❌ {str(e)[:200]}")
+        return
+    from .voice_notes import join_pieces
+    text = join_pieces(text_parts)
+    print(f"\n✅ {tr.model}, {_t.time() - t1:.1f} s:\n\n{text or '(nothing heard)'}\n")
+    print("That's exactly what a voice note would save (nothing went to your inbox).")
+
+
 async def main() -> None:
     if len(sys.argv) > 1 and sys.argv[1] == "claude":
         check_claude()
@@ -338,6 +391,9 @@ async def main() -> None:
     client = genai.Client()
     if len(sys.argv) > 1 and sys.argv[1] == "dictation":
         await check_dictation(client)
+        return
+    if len(sys.argv) > 1 and sys.argv[1] == "notes":
+        await check_notes(client)
         return
     if len(sys.argv) > 1 and sys.argv[1] == "look":
         await check_look(client)
