@@ -114,12 +114,12 @@ def _describe(name: str, inp: dict) -> dict:
 class ClaudeBridge:
     def __init__(self, cfg: dict, data_dir: Path, notify: Callable[[str, str], None],
                  runner=default_runner, clock: Callable[[], float] = time.time, threaded: bool = True,
-                 who: str = "the user", about: str = ""):
+                 who: str = "the user", about: str = "", local=lambda p: p):
         self.cfg = cfg
         self.system = SYSTEM.format(who=who, about=f" About them: {about.strip()}" if about and about.strip() else "")
         self.dir = Path(data_dir) / "Claude"
-        self.work = Path(data_dir) / "state" / "claude_workspace"  # neutral cwd: no repo CLAUDE.md/hooks
-        self.ledger = Path(data_dir) / "state" / "jobs.json"
+        self.work = local(Path(data_dir) / "state" / "claude_workspace")  # neutral cwd: no repo CLAUDE.md/hooks
+        self.ledger = local(Path(data_dir) / "state" / "jobs.json")      # each computer runs its own jobs
         self.notify = notify
         self.runner = runner
         self.clock = clock

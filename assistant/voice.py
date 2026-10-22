@@ -70,7 +70,7 @@ def log_error(hub: Hub, exc: BaseException) -> None:
     """Full traceback of a crashed conversation, so it can be fixed from the log instead of guessed."""
     import traceback
     try:
-        p = hub.dir / "logs" / "errors.log"
+        p = getattr(hub, "local", lambda x: x)(hub.dir / "logs" / "errors.log")
         p.parent.mkdir(parents=True, exist_ok=True)
         with p.open("a", encoding="utf-8") as f:
             f.write(f"--- {datetime.now():%Y-%m-%d %H:%M:%S}\n")
@@ -656,7 +656,7 @@ def list_mics(pa) -> list[dict]:
             api = pa.get_host_api_info_by_index(d["hostApi"]).get("name", "")
         except Exception:
             api = ""
-        if api and "MME" not in api:
+        if sys.platform == "win32" and api and "MME" not in api:
             continue
         if d["name"] in seen:
             continue
@@ -731,6 +731,12 @@ def _render_sounds() -> None:
 
 def beep(kind: str) -> None:
     """on = mic open (you pressed), off = sent (you let go), close = conversation over."""
+    if sys.platform == "darwin":
+        from .macos import play
+        if not _SOUND_FILES:
+            _render_sounds()
+        play(_SOUND_FILES[kind])
+        return
     if sys.platform != "win32":
         return
     import winsound
@@ -994,6 +1000,7 @@ async def converse(hub: Hub, vcfg: dict, client, conv_box: dict, first_press: bo
                 session = await stack.enter_async_context(client.aio.live.connect(model=vcfg["model"],
                                                                                   config=config))
             hub.claude.mark_delivered(waiting)
+            hub.presence.beat(used=True)          # talking to this computer: it's in charge now
             conv.session = session
             connected = True
             hub.pet.conversation(True)
@@ -1054,8 +1061,8 @@ async def main_async() -> None:
 
     cfg = load_config()
     if not gemini_key(cfg):
-        print("No Gemini key yet. Run setup-pakito.bat (or run-pakito.bat setup): it walks you through getting a "
-              "free one.")
+        print("No Gemini key yet. Run setup-pakito (.bat on Windows, .command on Mac): it walks you through getting "
+              "a free one.")
         return
     vcfg = {**VOICE_DEFAULTS, **cfg.get("voice", {})}
     MIC["name"] = vcfg.get("mic")
@@ -1070,10 +1077,17 @@ async def main_async() -> None:
     loop = asyncio.get_running_loop()
     events: asyncio.Queue[str] = asyncio.Queue()
     tweaks = windows_tweaks()
+    mac_keys = None
     if sys.platform == "win32":                  # poll the real keyboard: can't be delayed or dropped
         KeyPoller(vcfg["hotkey"], lambda what: loop.call_soon_threadsafe(events.put_nowait, what)).start()
         _render_sounds()
         await asyncio.to_thread(shared_pyaudio)  # warm up audio now, not on your first press
+    elif sys.platform == "darwin":               # pynput: needs Accessibility + Input Monitoring (macos.py)
+        from .macos import HotkeyListener
+        mac_keys = HotkeyListener([(HotkeyTracker(vcfg["hotkey"]),
+                                    lambda what: loop.call_soon_threadsafe(events.put_nowait, what))])
+        _render_sounds()
+        await asyncio.to_thread(shared_pyaudio)
     else:
         import keyboard
         tracker = HotkeyTracker(vcfg["hotkey"])
@@ -1094,10 +1108,13 @@ async def main_async() -> None:
             tweaks.append("pauses during calls")
     if tweaks:
         print("  (" + ", ".join(tweaks) + ")")
-    how = f"hold {vcfg['hotkey']} to talk, tap to hang up" if vcfg["mode"] == "ptt" else f"{vcfg['hotkey']} to start/stop"
+    shown = vcfg["hotkey"].replace("alt", "option").replace("windows", "cmd") if sys.platform == "darwin" \
+        else vcfg["hotkey"]
+    how = f"hold {shown} to talk, tap to hang up" if vcfg["mode"] == "ptt" else f"{shown} to start/stop"
     print(f"Pakito voice · {how} · model {vcfg['model']} · browser {hub.browser_name} · focus level {hub.focus.level} min")
     start_console(hub)
-    start_pet(cfg)
+    if sys.platform == "win32":
+        start_pet(cfg)                           # Pakibot's see-through window is Windows-only for now
 
     from .dictation import Transcriber
     from .voice_notes import NoteTaker
@@ -1106,13 +1123,21 @@ async def main_async() -> None:
                                loop=loop, log=print)
     loop.create_task(hub.note_taker.retry_pending())      # notes whose audio didn't get transcribed last time
     dictation = None
-    if sys.platform == "win32" and vcfg.get("dictation", True):
+    if sys.platform in ("win32", "darwin") and vcfg.get("dictation", True):
         from .dictation import Dictation
         dictation = Dictation(hub, transcriber,
                               beep=beep, log=lambda *a: print("\n" + " ".join(map(str, a)) + "\n› ", end="", flush=True))
-        KeyPoller(vcfg["dictation_hotkey"],
-                  lambda what: loop.call_soon_threadsafe(events.put_nowait, "dict_" + what)).start()
-        print(f"  (dictation: hold {vcfg['dictation_hotkey']}, talk, let go → text appears where your cursor is)")
+        emit = lambda what: loop.call_soon_threadsafe(events.put_nowait, "dict_" + what)
+        if mac_keys is not None:
+            mac_keys.trackers.append((HotkeyTracker(vcfg["dictation_hotkey"]), emit))
+        else:
+            KeyPoller(vcfg["dictation_hotkey"], emit).start()
+        key = vcfg["dictation_hotkey"].replace("windows", "cmd") if sys.platform == "darwin" else vcfg["dictation_hotkey"]
+        print(f"  (dictation: hold {key}, talk, let go → text appears where your cursor is)")
+    if mac_keys is not None:
+        mac_keys.start()
+        print("  (Mac: if the hotkeys do nothing, allow this terminal in System Settings → Privacy & Security → "
+              "Accessibility and Input Monitoring, then restart it)")
 
     box: dict = {"conv": None, "key_down": False, "on_call": bool(watcher and watcher.on_call)}
     task: asyncio.Task | None = None
@@ -1195,7 +1220,8 @@ def keytest() -> None:
     """run-pakito.bat keys: shows exactly when Pakito sees your hotkey go down/up."""
     cfg = load_config()
     hotkey = {**VOICE_DEFAULTS, **cfg.get("voice", {})}["hotkey"]
-    print(windows_tweaks())
+    if sys.platform == "win32":
+        print(windows_tweaks())
     _render_sounds()
     t0 = time.perf_counter()
     marks = {"press": "🟢 DOWN", "release": "⚪ UP  ", "cancel": "✖ shortcut (ignored)"}
@@ -1208,7 +1234,12 @@ def keytest() -> None:
         print(f"  {time.perf_counter() - t0:8.3f}s  {marks[what]}", flush=True)
 
     print(f"Hold {hotkey} a few times. Each line should appear the instant you press/let go. Ctrl+C to quit.")
-    poller = KeyPoller(hotkey, show)
+    if sys.platform == "darwin":
+        from .macos import HotkeyListener
+        poller = HotkeyListener([(HotkeyTracker(hotkey), show)])
+        poller.stop = lambda: None
+    else:
+        poller = KeyPoller(hotkey, show)
     poller.start()
     try:
         while True:

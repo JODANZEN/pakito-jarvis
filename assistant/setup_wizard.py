@@ -100,8 +100,27 @@ def default_browser_name() -> str | None:
     return prog.replace("url", "").replace("html", "").strip(".") or None
 
 
+def shared_memory(home: Path | None = None) -> list[str]:
+    """Folders that already hold Pakito's memory in a synced drive (OneDrive, iCloud, Dropbox, Google Drive), e.g. the
+    PC's Second Brain seen from the Mac. Looks two levels down for an Assistant/Routines.md."""
+    home = home or Path.home()
+    roots = list((home / "Library" / "CloudStorage").glob("*")) + list(home.glob("OneDrive*")) + \
+        [home / "Library" / "Mobile Documents" / "com~apple~CloudDocs", home / "Dropbox"]
+    found = []
+    for r in roots:
+        try:
+            for d in [r] + [c for c in r.iterdir() if c.is_dir()]:
+                if (d / "Assistant" / "Routines.md").exists() and str(d) not in found:
+                    found.append(str(d))
+        except OSError:
+            pass
+    return found
+
+
 def obsidian_vaults(appdata: str | None = None) -> list[str]:
-    """Vault folders Obsidian knows about (from %APPDATA%/obsidian/obsidian.json), existing ones only."""
+    """Vault folders Obsidian knows about (from its obsidian.json), existing ones only."""
+    if not appdata and sys.platform == "darwin":
+        appdata = str(Path.home() / "Library" / "Application Support")
     appdata = appdata or os.environ.get("APPDATA") or ""
     try:
         data = json.loads((Path(appdata) / "obsidian" / "obsidian.json").read_text(encoding="utf-8"))
@@ -195,9 +214,14 @@ class Wizard:
         self.say("  Routines, tasks, reminders, the notes you dictate (\"toma nota…\") and its logs. All plain Markdown.")
         current = self.cfg.get("vault_path")
         default_dir = str(Path.home() / "Documents" / "Pakito")
-        vaults = obsidian_vaults()
-        opts = [f"A plain folder: {default_dir}"] + [f"My Obsidian vault: {v}" for v in vaults] + ["Somewhere else…"]
-        paths = [default_dir] + vaults + [None]
+        shared = shared_memory()
+        vaults = [v for v in obsidian_vaults() if v not in shared]
+        opts = ([f"Pakito's memory from my other computer: {v}" for v in shared] + [f"A plain folder: {default_dir}"]
+                + [f"My Obsidian vault: {v}" for v in vaults] + ["Somewhere else…"])
+        paths = shared + [default_dir] + vaults + [None]
+        if shared:
+            self.say("  Found Pakito's memory in a synced folder: pick it to share tasks, routines, reminders and notes "
+                     "with your other computer.")
         if current and current not in paths:
             opts.insert(0, f"Keep what I have: {current}")
             paths.insert(0, current)
@@ -210,13 +234,35 @@ class Wizard:
             Path(path).expanduser().mkdir(parents=True, exist_ok=True)
             self.save({"vault_path": path})
             self.say(f"  ✅ {path}")
+            self.device(Path(path).expanduser())
+
+    def device(self, vault: Path) -> None:
+        """A folder another computer's Pakito already uses (synced by OneDrive/iCloud): join it as a second one."""
+        from .config import device_name
+        assistant = vault / "Assistant"
+        if not (assistant / "logs" / "events.jsonl").exists() or "device" in self.cfg:
+            return
+        me = device_name(self.cfg)
+        beats = [f.stem for f in (assistant / "state" / "devices").glob("*.json")] \
+            if (assistant / "state" / "devices").exists() else []
+        others = [b for b in beats if b != me]
+        self.say("  This folder already has Pakito's memory (tasks, routines, reminders, logs).")
+        joined = self.yes(f"  Is it from ANOTHER computer{f' ({others[0]})' if others else ''}, with this one joining?",
+                          default=bool(others) and me not in beats)
+        if joined:
+            self.save({"device": {"name": me, "primary": False}})
+            self.say(f"  ✅ Joined as \"{me}\". Both share the memory; each keeps its own logs, and the one you "
+                     "used last handles reminders.")
 
     # 4
     def browser(self) -> None:
         self.header(4, "Browser")
-        found = installed_browsers()
-        default = default_browser_name()
-        opts = [f"Windows default{f' ({default})' if default else ''}"] + [b["name"] for b in found]
+        if sys.platform == "darwin":
+            from .macos import browsers
+            found, default, system = browsers(), None, "System default"
+        else:
+            found, default, system = installed_browsers(), default_browser_name(), "Windows default"
+        opts = [f"{system}{f' ({default})' if default else ''}"] + [b["name"] for b in found]
         values = ["default"] + [b["path"] for b in found]
         cur = self.cfg.get("browser")
         start = values.index(cur) + 1 if cur in values else 1
@@ -305,7 +351,9 @@ class Wizard:
             self.say("  If it ever says the login expired: open a terminal, run `claude`, log in, /exit.")
         else:
             self.say("  Not installed. Optional: it lets Pakito hand hard questions and coding jobs to Claude")
-            self.say("  (needs a Claude subscription). Install in PowerShell:  irm https://claude.ai/install.ps1 | iex")
+            self.say("  (needs a Claude subscription). Install: " + (
+                "in Terminal:  curl -fsSL https://claude.ai/install.sh | bash" if sys.platform == "darwin" else
+                "in PowerShell:  irm https://claude.ai/install.ps1 | iex"))
             self.say("  then run `claude` once to log in. Everything else works without it.")
 
     def run(self) -> None:
@@ -317,12 +365,23 @@ class Wizard:
                 self.say("\nStopped. What you answered so far is saved.")
                 return
         v = self.cfg.get("voice") or {}
+        mac = sys.platform == "darwin"
+        talk = v.get("hotkey", "ctrl+alt")
+        dic = v.get("dictation_hotkey", "ctrl+windows")
+        if mac:
+            talk, dic = talk.replace("alt", "option"), dic.replace("windows", "cmd")
         self.say("\n── Ready " + "─" * 40)
-        self.say(f"  Talk: hold {v.get('hotkey', 'ctrl+alt')}, speak, let go. Tap it to hang up.")
-        self.say(f"  Dictation anywhere: hold {v.get('dictation_hotkey', 'ctrl+windows')}, speak, let go.")
+        self.say(f"  Talk: hold {talk}, speak, let go. Tap it to hang up.")
+        self.say(f"  Dictation anywhere: hold {dic}, speak, let go.")
+        if mac:
+            self.say("  First run: macOS will ask for Microphone, Accessibility and Input Monitoring for your Terminal."
+                     " Allow them (System Settings → Privacy & Security), then start Pakito again.")
         self.say("  Try: \"pon música\", \"modo lock in\", \"abre YouTube\", \"toma nota: …\", \"recuérdame mañana…\"")
-        self.say("  Extras, any time:  run-pakito.bat calendar (Google Calendar) · install-startup.bat (start with"
-                 " Windows) · run-pakito.bat check (test the connection)")
+        if sys.platform == "darwin":
+            self.say("  Extras, any time:  ./run-pakito.command calendar (Google Calendar) · ./run-pakito.command check")
+        else:
+            self.say("  Extras, any time:  run-pakito.bat calendar (Google Calendar) · install-startup.bat (start with"
+                     " Windows) · run-pakito.bat check (test the connection)")
 
 
 def check_gemini_key(key: str) -> str | None:

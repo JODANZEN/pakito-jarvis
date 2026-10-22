@@ -232,6 +232,11 @@ class FocusTrainer:
         end = at if at is not None else self.clock()
         actual = min((end - b["start"]) / 60, b["planned_min"]) if completed else (end - b["start"]) / 60
         c = self.cfg
+        fresh = self._load_state()           # another computer may have moved the level since we loaded it
+        if isinstance(fresh.get("level_min"), (int, float)):
+            self.state["level_min"] = fresh["level_min"]
+            self.state["completed_since_long_break"] = fresh.get("completed_since_long_break",
+                                                                 self.state["completed_since_long_break"])
         before = self.level
         after = before
         if not b["custom"]:

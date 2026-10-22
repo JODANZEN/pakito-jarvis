@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 from .claude_bridge import ClaudeBridge
-from .config import data_dir, load_config, user_name
+from .config import data_dir, device_path, device_name, load_config, user_name
 from .focus import FocusTrainer
 from .blocker import Blocker
 from .learner import Learner
@@ -111,18 +111,26 @@ class Hub:
                  clock: Callable[[], float] = time.time, timer_factory=None):
         self.cfg = cfg or load_config()
         self.dir = data_dir(self.cfg)
+        self.device = device_name(self.cfg)
+        self.local = lambda p: device_path(self.cfg, p)     # this computer's own copy of a file (see devices.py)
+
+        def log(name: str, folder: str = "logs") -> JsonlLog:
+            base = self.dir / folder / name
+            return JsonlLog(self.local(base), family=base)
+        from .devices import Presence
+        self.presence = Presence(self.dir / "state" / "devices", self.device, clock)
         exe, self.browser_name = find_browser(self.cfg.get("browser", "auto"))
         self.launch = launcher or make_launcher(exe)
         self.notify = notifier or make_notifier()
         self.clock = clock
-        self.events = JsonlLog(self.dir / "logs" / "events.jsonl")
+        self.events = log("events.jsonl")
         focus_kwargs = {"timer_factory": timer_factory} if timer_factory else {}
         self.focus = FocusTrainer(self.cfg["focus"], self.dir / "state" / "focus_state.json",
-                                  JsonlLog(self.dir / "logs" / "focus.jsonl"), self.notify,
+                                  log("focus.jsonl"), self.notify,
                                   clock=clock, **focus_kwargs)
         self.routines = Routines(self.dir / "Routines.md", seed=SEED_ROUTINES)
-        self.learner = Learner(self.cfg["learner"], JsonlLog(self.dir / "logs" / "episodes.jsonl"),
-                               JsonlLog(self.dir / "state" / "dismissed.jsonl"), clock=clock)
+        self.learner = Learner(self.cfg["learner"], log("episodes.jsonl"), log("dismissed.jsonl", "state"),
+                               clock=clock)
         self.mem = self.cfg["memory"]
         self.recent_opens: dict[tuple, float] = {}
         cutoff = clock() - self.mem["dedupe_min"] * 60
@@ -154,7 +162,7 @@ class Hub:
         self.podcasts = Podcasts(self.cfg.get("podcasts", []), {h for h in heard if h}, clock=clock,
                                  api_key=self.cfg.get("youtube_api_key"),
                                  spotify=self.spotify.sp if self.spotify else None)
-        self.claude = ClaudeBridge(self.cfg["claude"], self.dir, self.notify, clock=clock,
+        self.claude = ClaudeBridge(self.cfg["claude"], self.dir, self.notify, clock=clock, local=self.local,
                                    who=user_name(self.cfg), about=(self.cfg.get("user") or {}).get("about", ""))
         self.start_apps = StartApps()                 # installed apps, for "abre <anything>"
         self.open_terminal = open_terminal
@@ -162,18 +170,20 @@ class Hub:
         launched_files = lambda paths: [self.launch(p) for p in paths]   # tests: record instead of opening
         from .calendar_feed import Calendar
         ccfg = self.cfg.get("calendar") or {}
-        self.calendar = Calendar(ccfg.get("feeds", []), self.dir / "state" / "calendar_cache.json", clock=clock,
+        self.calendar = Calendar(ccfg.get("feeds", []), self.local(self.dir / "state" / "calendar_cache.json"), clock=clock,
                                  refresh_min=ccfg.get("refresh_min", 30))
         if launcher is None:
             self.calendar.maybe_refresh()
         from .pet_state import PetState
-        self.pet = PetState(self.dir / "state" / "pet.json", clock, self.cfg.get("pet"))
+        self.pet = PetState(self.local(self.dir / "state" / "pet.json"), clock, self.cfg.get("pet"))
         from pathlib import Path as _P
         from .notes import Inbox, Reminders
         self.inbox = Inbox(_P(self.cfg["vault_path"]), clock)
         self.reminders = Reminders(self.dir / "state" / "reminders.json", self.dir / "Reminders.md", clock=clock,
-                                   notify=self.notify, on_fire=self._pet_reminder)
+                                   notify=self.notify, on_fire=self._pet_reminder,
+                                   in_charge=self.presence.in_charge)
         if launcher is None:
+            self.presence.start()
             self.reminders.start()
         self._fuel = (0.0, 0.0)
         self.focus.listeners.append(lambda phase: phase == "break" and self.pet.flash("happy", 8))
@@ -183,8 +193,8 @@ class Hub:
                              open_files=(lambda paths: launched_files(paths)) if launcher else open_in_editor)
         if launcher is None:                          # real run (not tests): load the app list in the background
             self.start_apps.preload()
-        self.conversations = JsonlLog(self.dir / "logs" / "conversations.jsonl")
-        self.latency = JsonlLog(self.dir / "logs" / "latency.jsonl")       # seconds from letting go to its voice
+        self.conversations = log("conversations.jsonl")
+        self.latency = log("latency.jsonl")       # seconds from letting go to its voice
         self.note_taker = None                    # voice: saves notes from his own recording (voice_notes.py)
         self.pending_note_audio: bytes | None = None   # voice puts his recent turns here right before take_note
         self.tools: dict[str, Tool] = {}
@@ -224,6 +234,8 @@ class Hub:
 
     def call(self, name: str, args: dict | None = None, source: str = "typed") -> dict:
         args = {k: v for k, v in (args or {}).items() if v is not None}
+        if source in ("voice", "typed"):
+            self.presence.beat(used=True)            # you're on this computer: it's in charge now
         t0 = self.clock()
         tool = self.tools.get(name)
         if tool is None:

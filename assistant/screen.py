@@ -25,6 +25,10 @@ SENSITIVE = ("1password", "bitwarden", "keepass", "lastpass", "dashlane", "keepe
 
 def foreground() -> tuple[str, str, tuple[int, int, int, int] | None]:
     """-> (window title, process name, (left, top, right, bottom)) of the window in front."""
+    if sys.platform == "darwin":                               # no window bounds on Mac: the whole screen is used
+        from .macos import frontmost
+        title, app = frontmost()
+        return title, app, None
     if sys.platform != "win32":
         return "", "", None
     import ctypes

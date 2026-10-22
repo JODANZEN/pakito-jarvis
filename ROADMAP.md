@@ -10,9 +10,10 @@ call detection, "toma nota" → inbox, "recuérdame" reminders.
 The PC-only parts (Spotify, apps, lock-in) stay on the PC; what has to follow you moves to things that sync.
 1. **Google Tasks + Calendar** (one Google OAuth desktop client, like Spotify). Tasks and reminders reach the
    phone and fire even when the PC is off. "¿Qué tenemos para hoy?" works from campus. Notes already sync (OneDrive).
-2. **Voice from the S25:** a small web app on the phone that talks to the PC's hub over a private tunnel
+2. ✅ **Mac + PC sharing one memory** (Oct 22): see "Two computers" in assistant/README.md.
+3. **Voice from the S25:** a small web app on the phone that talks to the PC's hub over a private tunnel
    (Tailscale). Cheap; works while the PC is on.
-3. **Always-on brain** (only if 1–2 aren't enough): the hub runs on a small cloud server and the PC becomes a
+4. **Always-on brain** (only if 1–3 aren't enough): the hub runs on a small cloud server and the PC becomes a
    device it controls when online.
 
 ## Maybe later

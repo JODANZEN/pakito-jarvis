@@ -95,7 +95,7 @@ class NoteTaker:
     def __init__(self, hub, transcribe: Callable[[bytes, str], Awaitable[str]], vocab: list[str] | None = None,
                  loop: asyncio.AbstractEventLoop | None = None, log: Callable[..., None] = print):
         self.hub, self.transcribe, self.loop, self.log = hub, transcribe, loop, log
-        self.dir = Path(hub.dir) / "state" / "note_audio"
+        self.dir = getattr(hub, "local", lambda p: p)(Path(hub.dir) / "state" / "note_audio")   # this computer's
         self.prompt = NOTE_PROMPT.format(vocab=", ".join(vocab or []))
         self.running: list = []
 

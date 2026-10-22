@@ -1,9 +1,10 @@
 google-genai>=1.50
 pyaudio>=0.2.14
-keyboard>=0.13.5
+keyboard>=0.13.5 ; sys_platform != "darwin"
 winotify>=1.1 ; sys_platform == "win32"
 matplotlib>=3.8
 pytest>=8
 ddgs>=9
 spotipy>=2.25
 Pillow>=10
+pynput>=1.7 ; sys_platform == "darwin"

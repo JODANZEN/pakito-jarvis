@@ -1,7 +1,8 @@
 # Pakito
 
-A free, fast voice assistant for Windows (Gemini Live + a hub of PC tools). **Setup:** double-click
-`setup-pakito.bat`, answer a few questions, then run `run-pakito.bat` and hold Ctrl+Alt to talk.
+A free, fast voice assistant for Windows and Mac (Gemini Live + a hub of PC tools). **Setup:** double-click
+`setup-pakito.bat` (Mac: `bash setup-pakito.command`), answer a few questions, then run `run-pakito.bat`
+(Mac: `./run-pakito.command`) and hold Ctrl+Alt (Mac: Ctrl+Option) to talk.
 Everything else is in [assistant/README.md](assistant/README.md).
 
 ---

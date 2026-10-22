@@ -112,3 +112,30 @@ def test_wizard_notes_picks_plain_folder(tmp_path, monkeypatch):
     w.notes()
     assert json.loads(p.read_text())["vault_path"] == str(tmp_path / "Documents" / "Pakito")
     assert (tmp_path / "Documents" / "Pakito").is_dir()
+
+
+def test_joining_a_folder_another_computer_uses(tmp_path, monkeypatch):
+    vault = tmp_path / "Second Brain"
+    (vault / "Assistant" / "logs").mkdir(parents=True)
+    (vault / "Assistant" / "logs" / "events.jsonl").write_text("{}\n")
+    (vault / "Assistant" / "state" / "devices").mkdir(parents=True)
+    (vault / "Assistant" / "state" / "devices" / "joweedpc.json").write_text("{}")
+    p = tmp_path / "config.local.json"
+    p.write_text(json.dumps({"device_placeholder": 1}))
+    said = []
+    w = sw.Wizard(ask=lambda q: (said.append(q), "")[1], say=said.append, local=p)   # Enter = the default (join)
+    monkeypatch.setattr("assistant.config.device_name", lambda cfg: "josesmac")
+    w.device(vault)
+    cfg = json.loads(p.read_text())
+    assert cfg["device"] == {"name": "josesmac", "primary": False}
+    assert any("joweedpc" in s for s in said)
+
+
+def test_same_computer_rerunning_setup_stays_primary(tmp_path):
+    vault = tmp_path / "v"
+    (vault / "Assistant" / "logs").mkdir(parents=True)
+    (vault / "Assistant" / "logs" / "events.jsonl").write_text("{}\n")
+    p = tmp_path / "config.local.json"
+    w = sw.Wizard(ask=lambda q: "", say=lambda s: None, local=p)         # no other heartbeats: default = mine
+    w.device(vault)
+    assert "device" not in json.loads(p.read_text() if p.exists() else "{}")

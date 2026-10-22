@@ -462,7 +462,7 @@ def main() -> None:
     if len(sys.argv) > 1 and sys.argv[1] == "demo":
         demo()
         return
-    from .config import data_dir, load_config
+    from .config import data_dir, device_path, load_config
     from .server import PORT, TOKEN_FILE
     # one Pakibot at a time: hold a local port as a lock for as long as this window lives
     import socket
@@ -479,7 +479,7 @@ def main() -> None:
         print("Start Pakito first (it creates the token the pet needs).")
         return
     win = PetWindow(f"http://127.0.0.1:{PORT}", token, int(pcfg.get("scale", 3)),
-                    data_dir(cfg) / "state" / "pet_pos.json")
+                    device_path(cfg, data_dir(cfg) / "state" / "pet_pos.json"))    # each screen keeps its own spot
     win.root.mainloop()
 
 

@@ -1,4 +1,5 @@
-"""Dictation, Wispr Flow-style: hold Ctrl+Win, talk, let go: clean text appears where your cursor is.
+"""Dictation, Wispr Flow-style: hold Ctrl+Win (Ctrl+Cmd on a Mac), talk, let go: clean text appears where your
+cursor is.
 
 Works in any app (WhatsApp, Canvas, VS Code, email), without opening a Pakito conversation.
 Gemini (the same free key) transcribes AND lightly cleans it: punctuation, filler words out, "no, mejor…"
@@ -163,6 +164,9 @@ def _modifiers_down() -> bool:
 
 def paste(text: str) -> bool:
     """Type text where the cursor is: through the clipboard (fast, any language), then put the old one back."""
+    if sys.platform == "darwin":
+        from .macos import paste as mac_paste
+        return mac_paste(text)
     if sys.platform != "win32":
         print(text)
         return True

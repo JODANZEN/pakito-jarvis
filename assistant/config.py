@@ -16,6 +16,13 @@ DEFAULTS: dict = {
         "name": None,                 # e.g. "Jose". None = "the user"
         "about": "",                  # one line Pakito and Claude get, e.g. "He's a CS + Physics student at ASU."
     },
+    # More than one computer sharing the same folder (e.g. PC + Mac over OneDrive). The primary one keeps the
+    # plain file names; every other one writes its own logs (events.<name>.jsonl...) and reads everyone's.
+    # Whichever you used last owns reminders. Set by `setup` when it finds a folder another Pakito already uses.
+    "device": {
+        "name": None,                 # None = this computer's name
+        "primary": True,
+    },
     # Gemini key (free: https://aistudio.google.com/apikey). The GEMINI_API_KEY env var wins if both are set.
     "gemini_api_key": None,
     # Folder inside the vault where routines + logs live.
@@ -144,6 +151,26 @@ def load_config(path: str | os.PathLike | None = None) -> dict:
         cfg["vault_path"] = os.environ["PAKITO_VAULT"]
     cfg["vault_path"] = os.path.expandvars(os.path.expanduser(str(cfg["vault_path"])))
     return cfg
+
+
+def device_name(cfg: dict) -> str:
+    import re
+    import socket
+    raw = ((cfg.get("device") or {}).get("name") or socket.gethostname() or "device").split(".")[0]
+    return re.sub(r"[^a-z0-9-]+", "-", raw.lower()).strip("-") or "device"
+
+
+def is_primary(cfg: dict) -> bool:
+    return bool((cfg.get("device") or {}).get("primary", True))
+
+
+def device_path(cfg: dict, p: Path) -> Path:
+    """This computer's copy of a file that must not be shared: the primary keeps the plain name (nothing changes
+    for a one-computer setup); others get a suffix, e.g. events.joses-macbook.jsonl."""
+    p = Path(p)
+    if is_primary(cfg):
+        return p
+    return p.with_name(f"{p.stem}.{device_name(cfg)}{p.suffix}")
 
 
 def user_name(cfg: dict) -> str:

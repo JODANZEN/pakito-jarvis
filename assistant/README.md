@@ -14,6 +14,28 @@ Every action goes through `Hub.call` and gets logged, which is what the learning
 
 Change any answer later with `run-pakito.bat setup` (Enter keeps what you have).
 
+### On a Mac
+1. Download the repo (Code → Download ZIP, unzip). In Terminal, in that folder: **`bash setup-pakito.command`**
+   (after the first time you can double-click it). It needs Python 3.10–3.13 (`brew install python@3.13`) and
+   Homebrew for the mic library (it installs PortAudio for you).
+2. **`./run-pakito.command`**. Hold **Ctrl+Option** to talk, **Ctrl+Cmd** to dictate.
+3. The first time, macOS asks for **Microphone**, **Accessibility** and **Input Monitoring** for Terminal (System
+   Settings → Privacy & Security). Allow them and start it again; if a hotkey does nothing, that's the permission.
+
+Works on Mac: voice, music, focus + lock-in (the browser extension, plus closing blocked tabs in front), routines,
+opening apps, notes, reminders, tasks, dictation, "mira esto" (needs Screen Recording), Claude, calendar.
+Windows-only for now: Pakibot, pausing during calls, closing blocked apps.
+
+### Two computers, one memory (PC + Mac)
+Point both at the same synced folder (your Second Brain on OneDrive). On the second computer, setup finds it
+("Pakito's memory from my other computer") and joins it.
+- **Shared:** routines, tasks, reminders, notes/inbox, the focus level, dream questions, and the history of what
+  you did. "¿Qué hice hoy?" and the dream see both computers.
+- **Each computer writes its own logs** (`logs/events.<name>.jsonl`...) so OneDrive never has to merge one file;
+  Pakito reads them all. Pet position, Claude jobs and the running focus block stay per computer.
+- **Both can stay on.** The one you used last is in charge of reminders. A computer that sleeps stops its
+  heartbeat (`state/devices/`), and within ~2 minutes the other takes over. Talk to one and it takes over right away.
+
 ### Without a Second Brain
 Nothing here needs Obsidian. By default Pakito keeps its files in `Documents\Pakito` as plain Markdown:
 `Assistant/Routines.md`, `Tasks.md`, `Reminders.md`, day notes, logs, and `inbox/` for "toma nota". If you do use
@@ -289,7 +311,7 @@ Then say "ask Claude …", or Gemini decides to for hard questions. It runs in t
 Typed: `claude <question>`. It counts against your Claude plan's usage, and it isn't available on the free claude.ai plan.
 
 ## Tests
-`python -m pytest tests`: 190 tests. They use a fake clock and a fake Gemini session, so nothing launches and nothing hits the network.
+`python -m pytest tests`: 213 tests. They use a fake clock and a fake Gemini session, so nothing launches and nothing hits the network.
 
 ## Voice (Gemini Live)
 

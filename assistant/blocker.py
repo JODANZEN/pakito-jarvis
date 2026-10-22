@@ -34,7 +34,10 @@ def kill_process(name: str) -> None:
         subprocess.run(["taskkill", "/IM", name, "/F"], capture_output=True, creationflags=0x08000000)
 
 
-BROWSERS = {"opera.exe", "chrome.exe", "msedge.exe", "firefox.exe", "brave.exe", "vivaldi.exe", "arc.exe"}
+BROWSERS = {"opera.exe", "chrome.exe", "msedge.exe", "firefox.exe", "brave.exe", "vivaldi.exe", "arc.exe",
+            # Mac app names (frontmost process)
+            "opera", "opera gx", "google chrome", "microsoft edge", "firefox", "brave browser", "vivaldi", "arc",
+            "safari"}
 SUFFIX = re.compile(r"\s+[-–—]\s+(opera( gx)?|google chrome|microsoft\u200b? edge|mozilla firefox|brave|vivaldi)$", re.I)
 SPLIT = re.compile(r"\s+(?:[-–—|•/:]|on)\s+")
 
@@ -62,6 +65,10 @@ def title_site(title: str, sites: list[str]) -> str | None:
 
 def foreground_window() -> tuple[str, str, int]:
     """-> (title, process name, hwnd) of the window in front."""
+    if sys.platform == "darwin":
+        from .macos import frontmost
+        title, app = frontmost()
+        return title, app, 1
     if sys.platform != "win32":
         return "", "", 0
     from .screen import foreground
@@ -72,6 +79,10 @@ def foreground_window() -> tuple[str, str, int]:
 
 def close_tab(hwnd: int) -> None:
     """Ctrl+W to the browser in front, only if it's still the same window."""
+    if sys.platform == "darwin":
+        from .macos import _osa
+        _osa('tell application "System Events" to keystroke "w" using command down')
+        return
     if sys.platform != "win32":
         return
     import ctypes

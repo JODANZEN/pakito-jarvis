@@ -75,18 +75,38 @@ def parse_when(value: str | None, now: datetime) -> datetime | None:
 class Reminders:
     def __init__(self, path: Path, md_path: Path | None = None, clock: Callable[[], float] = time.time,
                  notify: Callable[[str, str], None] = lambda t, m: None, on_fire: Callable[[dict], None] | None = None,
-                 ask_after_days: float = 2):
+                 ask_after_days: float = 2, in_charge: Callable[[], bool] = lambda: True):
         self.path, self.md_path = Path(path), Path(md_path) if md_path else None
         self.clock, self.notify, self.on_fire = clock, notify, on_fire
         self.ask_after_days = ask_after_days
+        self.in_charge = in_charge
         self._lock = threading.Lock()
         self.items: list[dict] = []
+        self._sync()
+
+    def _disk(self) -> list[dict]:
         try:
-            self.items = json.loads(self.path.read_text(encoding="utf-8"))
+            items = json.loads(self.path.read_text(encoding="utf-8"))
+            return [i for i in items if isinstance(i, dict) and i.get("id")] if isinstance(items, list) else []
         except (OSError, ValueError):
-            pass
+            return []
+
+    def _sync(self) -> None:
+        """Merge what another computer saved (shared folder) with ours: per reminder, the newer change wins."""
+        disk = {i["id"]: i for i in self._disk()}
+        with self._lock:
+            mine = {i["id"]: i for i in self.items}
+            for rid, d in disk.items():
+                m = mine.get(rid)
+                if m is None or d.get("updated", d.get("created", 0)) > m.get("updated", m.get("created", 0)):
+                    mine[rid] = d
+            self.items = sorted(mine.values(), key=lambda r: r.get("created", 0))
+
+    def _touch(self, r: dict) -> None:
+        r["updated"] = max(self.clock(), r.get("updated", 0) + 1e-6)
 
     def _save(self) -> None:
+        self._sync()
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             self.path.write_text(json.dumps(self.items, ensure_ascii=False, indent=1), encoding="utf-8")
@@ -120,7 +140,7 @@ class Reminders:
         if not when:
             when = now + timedelta(days=ask_in_days if ask_in_days is not None else self.ask_after_days)
         item = {"id": uuid.uuid4().hex[:5], "what": what, "kind": kind, "at": when.timestamp(),
-                "created": self.clock(), "fired": False, "told": False, "done": False}
+                "created": self.clock(), "updated": self.clock(), "fired": False, "told": False, "done": False}
         with self._lock:
             self.items.append(item)
         self._save()
@@ -129,11 +149,15 @@ class Reminders:
 
     def check(self) -> list[dict]:
         """Fire what's due: toast + pet. Called every 30 s while Pakito runs."""
+        self._sync()
+        if not self.in_charge():              # another computer you're using now fires them
+            return []
         now, fired = self.clock(), []
         with self._lock:
             for r in self.items:
                 if not r["done"] and not r["fired"] and r["at"] <= now:
                     r["fired"] = True
+                    self._touch(r)
                     fired.append(r)
         for r in fired:
             title = "⏰ Recordatorio" if r["kind"] == "due" else "❓ Pakito quiere saber"
@@ -155,6 +179,7 @@ class Reminders:
         return [r for r in live if r["kind"] == "due"], [r for r in live if r["kind"] == "ask"]
 
     def find(self, ref: str | None) -> dict | None:
+        self._sync()
         open_ = [r for r in self.items if not r["done"]]
         if not ref:
             due = [r for r in open_ if r["at"] <= self.clock()]
@@ -175,6 +200,7 @@ class Reminders:
             r.update(done=True, told=True, done_at=self.clock())
             if answer:
                 r["answer"] = answer.strip()
+            self._touch(r)
         self._save()
         return {"done": r["what"], **({"answer": r["answer"]} if answer else {})}
 
@@ -186,10 +212,12 @@ class Reminders:
         when = parse_when(until, now) or now + timedelta(days=days if days is not None else 1)
         with self._lock:
             r.update(at=when.timestamp(), fired=False, told=False)
+            self._touch(r)
         self._save()
         return {"snoozed": r["what"], "until": when.strftime("%a %b %d %I:%M %p").replace(" 0", " ")}
 
     def upcoming(self) -> list[dict]:
+        self._sync()
         out = []
         for r in sorted((r for r in self.items if not r["done"]), key=lambda r: r["at"]):
             out.append({"id": r["id"], "what": r["what"], "kind": r["kind"],
