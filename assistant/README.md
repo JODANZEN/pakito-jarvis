@@ -7,7 +7,7 @@ Every action goes through `Hub.call` and gets logged, which is what the learning
 ## Start here (new PC)
 
 1. Download the repo, double-click **`setup-pakito.bat`**. It installs the Python packages (it uses Miniconda if you
-   have it, else makes a private `.venv` with your Python 3.10+), then asks a few questions:
+   have it, else makes a private `.venv` with Python 3.10–3.13: 3.13 recommended, newer ones lack the mic library), then asks a few questions:
    your name and city, a **free Gemini key** (it opens the page and checks the key), where to keep notes,
    your **browser**, your **mic** (with a level test), **Spotify** (Premium or not), and whether Claude Code is there.
 2. Double-click **`run-pakito.bat`**. Hold **Ctrl+Alt**, talk, let go.
