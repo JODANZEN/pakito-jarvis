@@ -37,7 +37,7 @@ OFF_RECORD = re.compile(r"off the record|off record|out of the record|no (lo |es
 SEND_RATE, RECEIVE_RATE, CHUNK = 16000, 24000, 1024
 
 VOICE_DEFAULTS = {
-    "model": "gemini-3.8-live",
+    "model": "gemini-3.1-flash-live-preview",   # setup / `check` picks one your key can use
     "mode": "ptt",               # "ptt" = hold the key to talk. "toggle" = press once, it listens hands-free
     "hotkey": "ctrl+alt",        # any key or combo: "ctrl+alt", "right ctrl", "f8", "ctrl+space"...
     "min_hold_sec": 0.3,         # shorter than this = a tap (hangs up) instead of talking
@@ -990,15 +990,16 @@ async def converse(hub: Hub, vcfg: dict, client, conv_box: dict, first_press: bo
                 session = await stack.enter_async_context(client.aio.live.connect(model=vcfg["model"],
                                                                                   config=config))
             except Exception as e:
-                if "session_resumption" not in config:
-                    raise
-                LONG_SESSIONS["ok"] = False             # this model won't take them: connect without, from now on
+                if "session_resumption" not in config or "quota" in str(e).lower():
+                    raise                                # quota/limits aren't about long sessions
                 log_error(hub, e)
-                print("  (this Gemini model doesn't take long-session support; continuing without it)")
-                config = {k: v for k, v in config.items()
-                          if k not in ("session_resumption", "context_window_compression")}
+                bare = {k: v for k, v in config.items()
+                        if k not in ("session_resumption", "context_window_compression")}
                 session = await stack.enter_async_context(client.aio.live.connect(model=vcfg["model"],
-                                                                                  config=config))
+                                                                                  config=bare))
+                config = bare                           # only now we know it was them: connect without from now on
+                LONG_SESSIONS["ok"] = False
+                print("  (this Gemini model doesn't take long-session support; continuing without it)")
             hub.claude.mark_delivered(waiting)
             hub.presence.beat(used=True)          # talking to this computer: it's in charge now
             conv.session = session
@@ -1082,10 +1083,10 @@ async def main_async() -> None:
         KeyPoller(vcfg["hotkey"], lambda what: loop.call_soon_threadsafe(events.put_nowait, what)).start()
         _render_sounds()
         await asyncio.to_thread(shared_pyaudio)  # warm up audio now, not on your first press
-    elif sys.platform == "darwin":               # pynput: needs Accessibility + Input Monitoring (macos.py)
-        from .macos import HotkeyListener
-        mac_keys = HotkeyListener([(HotkeyTracker(vcfg["hotkey"]),
-                                    lambda what: loop.call_soon_threadsafe(events.put_nowait, what))])
+    elif sys.platform == "darwin":               # polls macOS's own key state, like Windows (macos.py)
+        from . import macos
+        mac_keys = macos
+        macos.make_poller(vcfg["hotkey"], lambda what: loop.call_soon_threadsafe(events.put_nowait, what)).start()
         _render_sounds()
         await asyncio.to_thread(shared_pyaudio)
     else:
@@ -1129,15 +1130,14 @@ async def main_async() -> None:
                               beep=beep, log=lambda *a: print("\n" + " ".join(map(str, a)) + "\n› ", end="", flush=True))
         emit = lambda what: loop.call_soon_threadsafe(events.put_nowait, "dict_" + what)
         if mac_keys is not None:
-            mac_keys.trackers.append((HotkeyTracker(vcfg["dictation_hotkey"]), emit))
+            mac_keys.make_poller(vcfg["dictation_hotkey"], emit).start()
         else:
             KeyPoller(vcfg["dictation_hotkey"], emit).start()
         key = vcfg["dictation_hotkey"].replace("windows", "cmd") if sys.platform == "darwin" else vcfg["dictation_hotkey"]
         print(f"  (dictation: hold {key}, talk, let go → text appears where your cursor is)")
-    if mac_keys is not None:
-        mac_keys.start()
-        print("  (Mac: if the hotkeys do nothing, allow this terminal in System Settings → Privacy & Security → "
-              "Accessibility and Input Monitoring, then restart it)")
+    if mac_keys is not None and not mac_keys.trusted():
+        print("  (Mac: to paste dictation and close blocked tabs, allow this terminal app in System Settings → "
+              "Privacy & Security → Accessibility, then quit it fully (Cmd+Q) and reopen)")
 
     box: dict = {"conv": None, "key_down": False, "on_call": bool(watcher and watcher.on_call)}
     task: asyncio.Task | None = None
@@ -1179,6 +1179,10 @@ async def main_async() -> None:
         if task and task.done():
             if task.exception():
                 print(f"\n⚠ voice error: {task.exception()!r}  (details in logs/errors.log)")
+                if "quota" in str(task.exception()).lower():
+                    run = "./run-pakito.command" if sys.platform == "darwin" else "run-pakito.bat"
+                    print(f"  → Your free Gemini limit for {vcfg['model']} is used up (or this key can't use it). "
+                          f"Run `{run} check` to switch to a model that works.")
                 log_error(hub, task.exception())
             task, conv = None, None
         if vcfg["mode"] != "ptt":                # toggle: press starts, next press hangs up
@@ -1235,9 +1239,8 @@ def keytest() -> None:
 
     print(f"Hold {hotkey} a few times. Each line should appear the instant you press/let go. Ctrl+C to quit.")
     if sys.platform == "darwin":
-        from .macos import HotkeyListener
-        poller = HotkeyListener([(HotkeyTracker(hotkey), show)])
-        poller.stop = lambda: None
+        from .macos import make_poller
+        poller = make_poller(hotkey, show)
     else:
         poller = KeyPoller(hotkey, show)
     poller.start()

@@ -57,20 +57,39 @@ def test_notify_and_paste_go_through_osascript(monkeypatch):
     assert "keystroke \"v\" using command down" in scripts[1] and clip["v"] == "old"   # old clipboard back
 
 
-def test_hotkeys_ctrl_option_and_ctrl_cmd(monkeypatch):
-    names = {"ctrl_l": "left ctrl", "alt_l": "left alt", "cmd": "windows", "a": "a"}
-    monkeypatch.setattr(macos, "key_name", lambda k: names.get(k))
+def test_mac_key_state_reading():
+    F = macos.FLAGS
+    state = {"flags": F["ctrl"] | F["left ctrl"] | F["alt"] | F["left alt"], "keys": set()}
+    pr = lambda part: macos.pressed(part, lambda: state["flags"], lambda code: code in state["keys"])
+    assert pr("ctrl") and pr("alt") and not pr("windows") and not pr("shift")
+    assert pr("left ctrl") and not pr("right ctrl")
+    state["keys"].add(macos.VK_TO_MAC[ord("A")])
+    assert pr("a") and not pr("b") and pr("f8") is False and pr("nonsense") is None
+
+
+def test_mac_poller_talk_dictate_and_shortcut(monkeypatch):
+    F = macos.FLAGS
+    state = {"flags": 0, "keys": set()}
+    monkeypatch.setattr(macos, "flags", lambda: state["flags"])
+    monkeypatch.setattr(macos, "key_down", lambda code: code in state["keys"])
     talk, dic = [], []
-    lst = macos.HotkeyListener([(HotkeyTracker("ctrl+alt"), talk.append),
-                                (HotkeyTracker("ctrl+windows"), dic.append)])
-    for k, down in [("ctrl_l", True), ("alt_l", True), ("alt_l", False), ("ctrl_l", False)]:
-        lst._feed(k, down)
+    pt, pd = macos.make_poller("ctrl+alt", talk.append), macos.make_poller("ctrl+windows", dic.append)
+
+    def tick(n=3):
+        for _ in range(n):
+            for p, out in ((pt, talk), (pd, dic)):
+                w = p.step()
+                if w:
+                    out.append(w)
+
+    state["flags"] = F["ctrl"] | F["alt"]; tick()
+    state["flags"] = 0; tick()
     assert talk == ["press", "release"] and dic == []
-    for k, down in [("ctrl_l", True), ("cmd", True), ("cmd", False), ("ctrl_l", False)]:
-        lst._feed(k, down)
-    assert dic == ["press", "release"]
-    for k, down in [("ctrl_l", True), ("alt_l", True), ("a", True)]:         # Ctrl+Option+A is a shortcut
-        lst._feed(k, down)
+    state["flags"] = F["ctrl"] | F["windows"]; tick()          # Ctrl+Cmd = dictation
+    state["flags"] = 0; tick()
+    assert dic == ["press", "release"] and talk == ["press", "release"]
+    state["flags"] = F["ctrl"] | F["alt"]; tick()
+    state["keys"].add(macos.VK_TO_MAC[ord("A")]); tick()       # Ctrl+Option+A: a shortcut, not talking
     assert talk[-1] == "cancel"
 
 

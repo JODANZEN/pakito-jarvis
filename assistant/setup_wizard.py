@@ -186,6 +186,7 @@ class Wizard:
         if have:
             self.say(f"  You have one ({mask(have)}{', from the GEMINI_API_KEY variable' if env else ''}).")
             if not self.yes("  Paste a different one?", default=False):
+                self.pick_model(have)
                 return
         else:
             self.say("  Pakito's voice is Gemini Live. The key is free; you need a Google account.")
@@ -203,10 +204,34 @@ class Wizard:
             err = self.check_key(key)
             if not err:
                 self.save({"gemini_api_key": key})
-                self.say("  ✅ Works. Saved (only in config.local.json on this PC).")
+                self.say("  ✅ Works. Saved (only in config.local.json on this computer).")
                 self.say("  Heads-up: on the free tier Google may use what you say to improve its models.")
+                self.pick_model(key)
                 return
             self.say(f"  ❌ That didn't work: {err}")
+
+    def pick_model(self, key: str | None = None) -> None:
+        """Which voice model this key can actually use (not every key gets every Live model)."""
+        if (self.cfg.get("voice") or {}).get("model"):
+            return
+        self.say("  Finding a voice model your key can use…")
+        try:
+            model = self.find_model(key)
+        except Exception as e:
+            self.say(f"  Couldn't check ({type(e).__name__}); using the default. `check` can fix it later.")
+            return
+        if model:
+            self.save({"voice": {"model": model}})
+            self.say(f"  ✅ Voice model: {model}")
+        else:
+            self.say("  ⚠ No voice model answered (free limit used up for now?). Try `check` later.")
+
+    def find_model(self, key: str | None) -> str | None:
+        import asyncio
+        from google import genai
+        from .check_live import first_working
+        return asyncio.run(first_working(genai.Client(api_key=key) if key else genai.Client(),
+                                         say=lambda m: self.say("  " + m)))
 
     # 3
     def notes(self) -> None:

@@ -20,7 +20,7 @@ from pathlib import Path
 
 from google import genai
 
-PREFERRED = ["gemini-3.8-live", "gemini-3.1-flash-live-preview"]
+PREFERRED = ["gemini-3.1-flash-live-preview", "gemini-3.8-live"]   # 3.1 works on the free tier
 LOCAL = Path(__file__).with_name("config.local.json")
 
 
@@ -53,10 +53,25 @@ def save_local(cfg: dict) -> None:
     LOCAL.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
 
 
-async def check_models(client) -> None:
+def live_models(client) -> list[str]:
     live = [m.name.removeprefix("models/") for m in client.models.list()
             if "bidiGenerateContent" in (m.supported_actions or [])]
-    order = [m for m in PREFERRED if m in live] + [m for m in live if m not in PREFERRED]
+    return [m for m in PREFERRED if m in live] + [m for m in live if m not in PREFERRED]
+
+
+async def first_working(client, say=print) -> str | None:
+    """The first Live model this key can really talk to (setup uses it); stops at the first that works."""
+    for name in live_models(client):
+        res = await timed(probe(client, name), 20)
+        say(f"  {'✅' if res == 'OK' else '❌'} {name}: {res}")
+        if res == "OK":
+            return name
+    return None
+
+
+async def check_models(client) -> None:
+    order = live_models(client)
+    live = order
     print(f"Live-capable models your key sees: {len(live)}\n")
     working = None
     for name in order:

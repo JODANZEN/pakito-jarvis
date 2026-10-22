@@ -86,9 +86,11 @@ def test_wizard_you_and_gemini_steps(tmp_path):
     os.environ.pop("GEMINI_API_KEY", None)
     os.environ.pop("GOOGLE_API_KEY", None)
     sw.webbrowser.open = lambda url: None
+    w.find_model = lambda key: "gemini-3.1-flash-live-preview" if key == "good-key" else None
     w.you()
     w.gemini()
     cfg = json.loads(p.read_text())
+    assert cfg["voice"]["model"] == "gemini-3.1-flash-live-preview"     # picked a model this key can use
     assert cfg["user"] == {"name": "Ana", "about": "She studies biology."}
     assert cfg["voice"]["location"] == "Lima, Peru" and cfg["gemini_api_key"] == "good-key"
     assert any("didn't work" in s for s in said)

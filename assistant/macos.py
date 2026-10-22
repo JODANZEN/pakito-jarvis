@@ -127,41 +127,69 @@ def play(wav_path: str) -> None:
 
 
 # ---------- hotkeys ----------
-def key_name(key) -> str | None:
-    """pynput key -> the names HotkeyTracker uses. Option = alt, Cmd = windows (so Ctrl+Win dictation = Ctrl+Cmd)."""
-    from pynput import keyboard as kb
-    names = {kb.Key.ctrl: "ctrl", kb.Key.ctrl_l: "left ctrl", kb.Key.ctrl_r: "right ctrl",
-             kb.Key.alt: "alt", kb.Key.alt_l: "left alt", kb.Key.alt_r: "right alt",
-             kb.Key.shift: "shift", kb.Key.shift_l: "left shift", kb.Key.shift_r: "right shift",
-             kb.Key.cmd: "windows", kb.Key.cmd_l: "left windows", kb.Key.cmd_r: "right windows",
-             kb.Key.space: "space", kb.Key.tab: "tab", kb.Key.enter: "enter", kb.Key.esc: "esc"}
-    if key in names:
-        return names[key]
-    name = getattr(key, "name", None)
-    if name:                                           # f1..f20 and the rest
-        return name.replace("_", " ")
-    ch = getattr(key, "char", None)
-    return ch.lower() if ch else None
+# Polled ~100x/s from macOS's own key state (Quartz, through ctypes), like the Windows KeyPoller. No keyboard library:
+# pynput segfaulted on recent macOS. Modifier-only hotkeys (Ctrl+Option, Ctrl+Cmd) don't need any permission to
+# read; telling a shortcut (Ctrl+Option+A) apart from talking uses Input Monitoring if it's allowed.
+_CG = None
+FLAGS = {"ctrl": 1 << 18, "alt": 1 << 19, "shift": 1 << 17, "windows": 1 << 20,          # either side
+         "left ctrl": 0x1, "right ctrl": 0x2000, "left shift": 0x2, "right shift": 0x4,
+         "left alt": 0x20, "right alt": 0x40, "left windows": 0x8, "right windows": 0x10}
+# Windows virtual-key codes (what KeyPoller asks about) -> Mac key codes
+VK_TO_MAC = {0x08: 51, 0x09: 48, 0x0D: 36, 0x1B: 53, 0x20: 49, 0x2E: 117, 0x25: 123, 0x26: 126, 0x27: 124,
+             0x28: 125, **{0x70 + i: k for i, k in enumerate([122, 120, 99, 118, 96, 97, 98, 100, 101, 109, 103, 111])}}
+MAC_KEYS = {"A": 0, "S": 1, "D": 2, "F": 3, "H": 4, "G": 5, "Z": 6, "X": 7, "C": 8, "V": 9, "B": 11, "Q": 12,
+            "W": 13, "E": 14, "R": 15, "Y": 16, "T": 17, "1": 18, "2": 19, "3": 20, "4": 21, "6": 22, "5": 23,
+            "9": 25, "7": 26, "8": 28, "0": 29, "O": 31, "U": 32, "I": 34, "P": 35, "L": 37, "J": 38, "K": 40,
+            "N": 45, "M": 46}
+VK_TO_MAC.update({ord(ch): code for ch, code in MAC_KEYS.items()})
+NAME_TO_MAC = {"space": 49, "tab": 48, "enter": 36, "esc": 53, **{f"f{i + 1}": k for i, k in enumerate(
+    [122, 120, 99, 118, 96, 97, 98, 100, 101, 109, 103, 111])}}
 
 
-class HotkeyListener:
-    """One pynput listener for all of Pakito's hotkeys. trackers: [(HotkeyTracker, emit)]."""
+def _cg():
+    global _CG
+    if _CG is None:
+        import ctypes
+        lib = ctypes.cdll.LoadLibrary("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics")
+        lib.CGEventSourceFlagsState.restype = ctypes.c_uint64
+        lib.CGEventSourceFlagsState.argtypes = [ctypes.c_int32]
+        lib.CGEventSourceKeyState.restype = ctypes.c_bool
+        lib.CGEventSourceKeyState.argtypes = [ctypes.c_int32, ctypes.c_uint16]
+        _CG = lib
+    return _CG
 
-    def __init__(self, trackers: list[tuple[object, Callable[[str], None]]]):
-        self.trackers = trackers
-        self.listener = None
 
-    def _feed(self, key, down: bool) -> None:
-        name = key_name(key)
-        if not name:
-            return
-        for tracker, emit in self.trackers:
-            what = tracker.feed(name, down)
-            if what:
-                emit(what)
+def flags() -> int:
+    return int(_cg().CGEventSourceFlagsState(0))          # 0 = combined session state
 
-    def start(self) -> None:
-        from pynput import keyboard as kb
-        self.listener = kb.Listener(on_press=lambda k: self._feed(k, True), on_release=lambda k: self._feed(k, False))
-        self.listener.daemon = True
-        self.listener.start()
+
+def key_down(mac_code: int) -> bool:
+    return bool(_cg().CGEventSourceKeyState(0, mac_code))
+
+
+def pressed(part: str, read_flags: Callable[[], int] = None, read_key: Callable[[int], bool] = None):
+    """Is this hotkey part down right now? True/False, or None if we can't tell."""
+    read_flags, read_key = read_flags or flags, read_key or key_down
+    if part in FLAGS:
+        return bool(read_flags() & FLAGS[part])
+    code = NAME_TO_MAC.get(part) or (VK_TO_MAC.get(ord(part.upper())) if len(part) == 1 else None)
+    return None if code is None else read_key(code)
+
+
+def make_poller(hotkey: str, emit: Callable[[str], None]):
+    """A KeyPoller (the Windows one: debounced, cancels on Ctrl+Option+<key>) reading the Mac's key state."""
+    from .voice import KeyPoller
+    poller = KeyPoller(hotkey, emit, pressed=pressed)
+    poller.vk_down = lambda vk: key_down(VK_TO_MAC[vk]) if vk in VK_TO_MAC else False
+    return poller
+
+
+def trusted() -> bool:
+    """Accessibility permission: needed to paste dictation and close blocked tabs (not for the hotkeys)."""
+    try:
+        import ctypes
+        ax = ctypes.cdll.LoadLibrary("/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices")
+        ax.AXIsProcessTrusted.restype = ctypes.c_bool
+        return bool(ax.AXIsProcessTrusted())
+    except Exception:
+        return True

@@ -354,3 +354,35 @@ def test_model_that_rejects_long_sessions_still_connects(hub, monkeypatch):
 def test_pieces_cut_mid_sentence_are_joined_back():
     parts = ["Entonces, pues a veces sí me", "pongo a elaborar mucho. Y otra idea.", "Nuevo tema", ""]
     assert vn.join_pieces(parts) == "Entonces, pues a veces sí me pongo a elaborar mucho. Y otra idea.\n\nNuevo tema"
+
+
+def test_quota_error_doesnt_turn_off_long_sessions(hub, monkeypatch):
+    """Mac, Oct 22: a quota error got blamed on long sessions and switched them off."""
+    from assistant import voice
+
+    class FakeIO(LoudAudio):
+        mic_name = "fake"
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(voice, "PyAudioIO", FakeIO)
+    monkeypatch.setattr(voice, "beep", lambda k: None)
+    monkeypatch.setitem(voice.LONG_SESSIONS, "ok", True)
+    tries = []
+
+    class CM:
+        async def __aenter__(self):
+            raise RuntimeError("1011 None. You exceeded your current quota, please check your plan")
+
+        async def __aexit__(self, *a):
+            return False
+
+    class Live:
+        def connect(self, model, config):
+            tries.append(config)
+            return CM()
+
+    with pytest.raises(RuntimeError, match="quota"):
+        asyncio.run(voice.converse(hub, {**VOICE_DEFAULTS}, NS(aio=NS(live=Live())), {}, first_press=False))
+    assert len(tries) == 1 and voice.LONG_SESSIONS["ok"] is True

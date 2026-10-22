@@ -7,4 +7,3 @@ pytest>=8
 ddgs>=9
 spotipy>=2.25
 Pillow>=10
-pynput>=1.7 ; sys_platform == "darwin"
