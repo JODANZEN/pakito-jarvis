@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import time
+from datetime import datetime
 import urllib.parse
 from dataclasses import dataclass
 from typing import Callable
@@ -547,6 +548,14 @@ class Hub:
             except Exception as e:
                 return {"error": f"search failed ({type(e).__name__}); answer from what you know and say so"}
             return {"results": [{"title": h.get("title"), "snippet": h.get("body"), "url": h.get("href")} for h in hits]}
+
+        @self.tool("current_time", "The exact time and date right now on this computer, in his time zone. Use it "
+                   "when he asks the time and the conversation has gone on a while.")
+        def current_time():
+            t = datetime.fromtimestamp(self.clock()).astimezone()
+            off = t.strftime("%z")
+            return {"time": t.strftime("%I:%M %p").lstrip("0"), "date": t.strftime("%A %B %d %Y"),
+                    "zone": f"{t.tzname()} (UTC{off[:3]}:{off[3:]})" if off else "local"}
 
         @self.tool("recent_actions", "What Pakito did recently (opened, played, started), to avoid repeating things.",
                    _obj({"hours": N}))

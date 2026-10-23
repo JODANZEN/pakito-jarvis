@@ -254,8 +254,10 @@ class Wizard:
             self.say("  Found Obsidian. With a vault, Pakito writes into an Assistant/ folder and your inbox/,"
                      " and its notes link up with yours.")
         pick = self.choose("  Pick one", opts, 1 if not current else paths.index(current) + 1)
-        path = paths[pick - 1] or self.q("  Folder path")
+        path = paths[pick - 1] or self.q("  Folder path (paste it; quotes are fine)")
         if path:
+            from .config import clean_path
+            path = clean_path(path)
             Path(path).expanduser().mkdir(parents=True, exist_ok=True)
             self.save({"vault_path": path})
             self.say(f"  ✅ {path}")

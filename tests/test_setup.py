@@ -141,3 +141,13 @@ def test_same_computer_rerunning_setup_stays_primary(tmp_path):
     w = sw.Wizard(ask=lambda q: "", say=lambda s: None, local=p)         # no other heartbeats: default = mine
     w.device(vault)
     assert "device" not in json.loads(p.read_text() if p.exists() else "{}")
+
+
+def test_pasted_paths_are_cleaned():
+    from assistant.config import clean_path
+    mac = "/Users/pedrosanchez/Library/CloudStorage/OneDrive-Personal/Second Brain"
+    assert clean_path(f"'{mac}'") == mac                       # Oct 22: the quotes became part of the path
+    assert clean_path(f' "{mac}" ') == mac
+    if clean_path("a\\ b") == "a b":                             # backslash escapes only on Mac/Linux
+        assert clean_path(mac.replace(" ", "\\ ")) == mac
+    assert clean_path(r"C:\Users\jdsn2\OneDrive\Second Brain") == r"C:\Users\jdsn2\OneDrive\Second Brain"

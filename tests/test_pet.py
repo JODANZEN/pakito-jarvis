@@ -151,3 +151,20 @@ def test_frame_is_cheap():
         pet.to_photo_rows(pet.draw(snap, i * 0.08), 3, "#ff00fe")
     per_frame = (time.perf_counter() - t0) / 50
     assert per_frame < 0.02, per_frame                          # 12 fps needs < 83 ms; aim far below
+
+
+def test_bubble_text_never_leaves_the_frame():
+    """Oct 23: long replies spilled out of the speech bubble (fixed 74 px box, up to 150 chars)."""
+    from assistant.pet import fit_lines
+    measure = lambda s: 7 * len(s)                             # a 7-px monospace font
+    width, lines = 196, 3                                      # 28 characters per line, 3 lines
+    long = ("Claro que sí, aquí tienes la hora exacta en Tempe: son las nueve y treinta y cuatro de la mañana "
+            "del viernes, y tu siguiente bloque de estudio empieza a las diez")
+    out = fit_lines(long, width, lines, measure)
+    rows = out.split("\n")
+    assert len(rows) == lines and all(measure(r) <= width for r in rows)
+    assert rows[0].startswith("…") and out.endswith("a las diez")          # newest words always visible
+    assert fit_lines("Listo.", width, lines, measure) == "Listo."
+    assert fit_lines("hola\n⚙ play music", width, lines, measure) == "hola\n⚙ play music"
+    url = "https://www.youtube.com/results?search_query=" + "x" * 80   # one huge word gets split, not overflowed
+    assert all(measure(r) <= width for r in fit_lines(url, width, lines, measure).split("\n"))

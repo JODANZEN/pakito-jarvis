@@ -1055,3 +1055,14 @@ def test_add_task_dedupe_doesnt_swallow_longer_tasks(tmp_path):
     t.add("Aplicar a internships")
     assert t.add("aplicar a internships hoy")["exists"]
     assert t.complete("study for two", "2026-10-20")["completed"] == "study for two exams"
+
+
+def test_time_comes_with_the_zone(env):
+    """Mac, Oct 23: '¿qué hora es?' got a wrong hour; the prompt said '09:34 AM' with no zone, so Gemini guessed."""
+    from datetime import datetime
+    from assistant.voice import now_line
+    line = now_line(datetime(2026, 10, 23, 9, 34).astimezone())
+    assert "9:34 AM" in line and "UTC" in line and "October 23 2026" in line
+    hub, *_ = env
+    r = hub.call("current_time")
+    assert r["time"] and r["date"] and "UTC" in r["zone"]

@@ -62,6 +62,51 @@ def text_width(s: str) -> int:
     return sum(len(FONT[ch][0]) + 1 for ch in s) - 1
 
 
+def fit_lines(text: str, width: int, max_lines: int, measure) -> str:
+    """Wrap text to the bubble's width (measure = pixel width of a string in the bubble's font) and keep the LAST
+    lines that fit, so live speech always shows its newest words and never spills out of the frame."""
+    lines: list[str] = []
+    for para in text.split("\n"):
+        cur = ""
+        for word in para.split():
+            while measure(word) > width and len(word) > 1:          # a word longer than the bubble: split it
+                cut = len(word)
+                while cut > 1 and measure((cur + " " if cur else "") + word[:cut]) > width:
+                    cut -= 1
+                if cur and measure(cur + " " + word[:cut]) > width:
+                    lines.append(cur)
+                    cur = ""
+                    continue
+                lines.append((cur + " " if cur else "") + word[:cut])
+                cur, word = "", word[cut:]
+            trial = (cur + " " + word) if cur else word
+            if measure(trial) <= width:
+                cur = trial
+            else:
+                if cur:
+                    lines.append(cur)
+                cur = word
+        lines.append(cur)
+    while lines and not lines[-1]:
+        lines.pop()
+    if len(lines) <= max_lines:
+        return "\n".join(lines)
+    keep = lines[-max_lines:]
+    first = "…" + keep[0]
+    while measure(first) > width and len(first) > 2:
+        first = "…" + first[2:]
+    return "\n".join([first] + keep[1:])
+
+
+def bubble_font() -> tuple[str, int]:
+    """A monospace font this system has: Consolas on Windows, Menlo on a Mac."""
+    if sys.platform == "win32":
+        return "Consolas", 10
+    if sys.platform == "darwin":
+        return "Menlo", 11
+    return "Courier", 10
+
+
 def mmss(sec: float) -> str:
     sec = max(0, int(sec))
     m = sec // 60
@@ -261,8 +306,13 @@ class PetWindow:
         tx = sx + self.sw // 2
         self.tail = c.create_polygon(tx - 10, self.bh, tx + 6, self.bh, tx, self.bh + 10,
                                      fill="#444441", outline="#444441")
-        self.who = c.create_text(12, 8, anchor="nw", fill="#5F5E5A", font=("Consolas", 8))
-        self.txt = c.create_text(12, 22, anchor="nw", fill="#2C2C2A", font=("Consolas", 10), width=self.bw - 20)
+        import tkinter.font as tkfont
+        family, size = bubble_font()
+        self.font = tkfont.Font(root=root, family=family, size=size)
+        self.text_w = self.bw - 22
+        self.max_lines = max(1, (self.bh - 22 - 6) // max(1, self.font.metrics("linespace")))
+        self.who = c.create_text(12, 8, anchor="nw", fill="#5F5E5A", font=(family, size - 2))
+        self.txt = c.create_text(12, 22, anchor="nw", fill="#2C2C2A", font=self.font, width=self.text_w + 4)
         self._place()
         self._drag = None
         c.bind("<ButtonPress-1>", self._drag_start)
@@ -378,8 +428,7 @@ class PetWindow:
             who = {"you": "tú", "pakito": "pakito"}.get(snap.get("who"), snap.get("who") or "")
         if note:
             text = (text + "\n" if text else "") + note
-        if len(text) > 150:
-            text = "…" + text[-150:]
+        text = fit_lines(text, self.text_w, self.max_lines, self.font.measure)
         shown = bool(text) and (snap.get("conv") or snap.get("state") == "happy" or bool(snap.get("claude")))
         if (shown, who, text) == self._last_bubble:
             return

@@ -384,5 +384,53 @@ def test_quota_error_doesnt_turn_off_long_sessions(hub, monkeypatch):
             return CM()
 
     with pytest.raises(RuntimeError, match="quota"):
-        asyncio.run(voice.converse(hub, {**VOICE_DEFAULTS}, NS(aio=NS(live=Live())), {}, first_press=False))
+        asyncio.run(voice.converse(hub, {**VOICE_DEFAULTS, "google_search": False}, NS(aio=NS(live=Live())), {},
+                                   first_press=False))
     assert len(tries) == 1 and voice.LONG_SESSIONS["ok"] is True
+
+
+def test_search_quota_falls_back_to_lookup(hub, monkeypatch, tmp_path):
+    """Mac, Oct 22: every conversation died on '1011 ... exceeded your current quota' = Google Search's free limit."""
+    from assistant import voice
+
+    class FakeIO(LoudAudio):
+        mic_name = "fake"
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(voice, "PyAudioIO", FakeIO)
+    monkeypatch.setattr(voice, "beep", lambda k: None)
+    saved = {}
+    monkeypatch.setattr(voice, "_save_voice_setting", lambda k, v: saved.update({k: v}))
+    tries = []
+
+    class Sess(RecSession):
+        async def receive(self):
+            await asyncio.sleep(0.05)
+            if False:
+                yield None
+
+    class CM:
+        def __init__(self, cfg):
+            self.cfg = cfg
+
+        async def __aenter__(self):
+            if any("google_search" in t for t in self.cfg["tools"]):
+                raise RuntimeError("1011 None. You exceeded your current quota, please check your plan")
+            return Sess()
+
+        async def __aexit__(self, *a):
+            return False
+
+    class Live:
+        def connect(self, model, config):
+            tries.append(config)
+            return CM(config)
+
+    vcfg = {**VOICE_DEFAULTS, "google_search": True, "idle_timeout_sec": 0.2}
+    asyncio.run(asyncio.wait_for(voice.converse(hub, vcfg, NS(aio=NS(live=Live())), {}, first_press=False), 5))
+    assert len(tries) == 2 and not any("google_search" in t for t in tries[1]["tools"])
+    names = [f["name"] for f in tries[1]["tools"][0]["function_declarations"]]
+    assert "lookup" in names                                   # the free search tool is offered instead
+    assert vcfg["google_search"] is False and saved == {"google_search": False}

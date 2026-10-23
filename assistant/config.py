@@ -142,6 +142,16 @@ def _merge(base: dict, override: dict) -> dict:
     return out
 
 
+def clean_path(p: str) -> str:
+    """A path as people paste it: drop surrounding quotes (Finder/Terminal add them) and backslash-escaped spaces."""
+    p = str(p).strip()
+    while len(p) >= 2 and p[0] == p[-1] and p[0] in "'\"":
+        p = p[1:-1].strip()
+    if os.sep == "/":
+        p = p.replace("\\ ", " ")
+    return p
+
+
 def load_config(path: str | os.PathLike | None = None) -> dict:
     cfg = copy.deepcopy(DEFAULTS)
     local = Path(path) if path else Path(__file__).with_name("config.local.json")
@@ -149,7 +159,7 @@ def load_config(path: str | os.PathLike | None = None) -> dict:
         cfg = _merge(cfg, json.loads(local.read_text(encoding="utf-8")))
     if os.environ.get("PAKITO_VAULT"):
         cfg["vault_path"] = os.environ["PAKITO_VAULT"]
-    cfg["vault_path"] = os.path.expandvars(os.path.expanduser(str(cfg["vault_path"])))
+    cfg["vault_path"] = os.path.expandvars(os.path.expanduser(clean_path(cfg["vault_path"])))
     return cfg
 
 

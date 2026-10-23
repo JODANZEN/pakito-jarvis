@@ -79,6 +79,14 @@ def log_error(hub: Hub, exc: BaseException) -> None:
         pass
 
 
+def now_line(when: datetime | None = None) -> str:
+    """'Friday October 23 2026, 9:34 AM (MST, UTC-07:00)': with the zone, so Gemini doesn't guess one."""
+    t = (when or datetime.now()).astimezone()
+    off = t.strftime("%z")
+    off = f"UTC{off[:3]}:{off[3:]}" if off else "local time"
+    return f"{t:%A %B %d %Y}, {t:%I:%M %p}".replace(", 0", ", ") + f" ({t.tzname() or 'local'}, {off})"
+
+
 def system_prompt(hub: Hub, vcfg: dict) -> str:
     routines = hub.routines.all()
     rlines = "\n".join(
@@ -126,7 +134,9 @@ def system_prompt(hub: Hub, vcfg: dict) -> str:
                        "asked, tell him this once, in one short sentence, in Spanish: " + dream[:300])
     where = f" They're in {vcfg['location']} unless they say otherwise." if vcfg.get("location") else ""
     return f"""You are Pakito, the voice assistant on the Windows PC of {user_line(hub.cfg)}.
-Now: {datetime.now():%A %B %d %Y, %I:%M %p}.{where}
+Now: {now_line()}.{where}
+The time and date: read them from "Now" (this computer's clock, already in his time zone; don't convert it to
+another zone, don't search for it). If the conversation has gone on a while, call current_time.
 
 How to talk: short and natural, one or two sentences. This is speech, so no lists or markdown.
 Answer in whatever language he speaks (English or Spanish, he switches).
@@ -164,7 +174,8 @@ How to act:
 - Don't redo things. If a tool says skipped/already opened, just say it's already open. Only pass force=true if he
   clearly asks to open it again.
 - For school, you're an organizer, not a homework solver.
-- "Terminé" / done for today: call end_day, read its summary, ask what he got done, what's still open, and how his
+- Only when HE says he's done for the day ("terminé por hoy", "ya acabé", "done for today"; not a question
+  like "¿terminaste?"): call end_day, read its summary, ask what he got done, what's still open, and how his
   projects went (what moved, what got stuck), call log_day, then offer the examen (save_examen has the questions). This is a conversation: one question at a time.
 - When he's done talking to you, call end_conversation.
 
@@ -173,6 +184,17 @@ Done recently (oldest first):
 
 
 LONG_SESSIONS = {"ok": True}      # turned off for this run if the model rejects compression/resumption
+
+
+def _save_voice_setting(key: str, value) -> None:
+    """Remember a fallback in config.local.json so the next start doesn't hit the same wall."""
+    try:
+        p = Path(__file__).with_name("config.local.json")
+        cfg = json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
+        cfg.setdefault("voice", {})[key] = value
+        p.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        pass
 
 
 def live_config(hub: Hub, vcfg: dict) -> dict:
@@ -990,9 +1012,21 @@ async def converse(hub: Hub, vcfg: dict, client, conv_box: dict, first_press: bo
                 session = await stack.enter_async_context(client.aio.live.connect(model=vcfg["model"],
                                                                                   config=config))
             except Exception as e:
-                if "session_resumption" not in config or "quota" in str(e).lower():
+                has_search = any("google_search" in t for t in config.get("tools", []))
+                if "quota" in str(e).lower() and has_search:
+                    # the free tier's Google Search allowance ran out: talk without it (the lookup tool still works)
+                    vcfg["google_search"] = False
+                    _save_voice_setting("google_search", False)
+                    print("  (Google Search hit the free limit: using Pakito's own lookup tool instead. "
+                          "`check full` turns Search back on when it works again.)")
+                    config = live_config(hub, vcfg)
+                    session = await stack.enter_async_context(client.aio.live.connect(model=vcfg["model"],
+                                                                                      config=config))
+                elif "session_resumption" not in config or "quota" in str(e).lower():
                     raise                                # quota/limits aren't about long sessions
-                log_error(hub, e)
+                else:
+                    session = None
+            if session is None:
                 bare = {k: v for k, v in config.items()
                         if k not in ("session_resumption", "context_window_compression")}
                 session = await stack.enter_async_context(client.aio.live.connect(model=vcfg["model"],
