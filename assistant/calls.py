@@ -9,6 +9,7 @@ and leaves the mic alone until the call ends.
 """
 from __future__ import annotations
 
+import os
 import sys
 import threading
 import time
@@ -64,11 +65,21 @@ def friendly(key: str) -> str:
     return key.split("_", 1)[0].split(".")[-1]      # "5319275A.WhatsAppDesktop_cv1g..." -> WhatsAppDesktop
 
 
-def _is_own(key: str, own_prefix: str) -> bool:
-    return key.startswith("#") and key[1:].replace("#", "\\").lower().startswith(own_prefix)
+def own_prefixes() -> tuple[str, ...]:
+    """Every folder Pakito's own Python can run from. A .venv's python.exe is only a launcher: the process
+    that actually opens the mic is the base install's python.exe (sys.base_prefix), so both count as Pakito."""
+    dirs = {sys.prefix, sys.base_prefix, os.path.dirname(sys.executable),
+            os.path.dirname(getattr(sys, "_base_executable", "") or sys.executable)}
+    return tuple(sorted({str(Path(d)).lower().rstrip("\\") + "\\" for d in dirs if d}))
 
 
-def mic_users(entries: list[tuple[str, float, float]], now: float, own_prefix: str,
+def _is_own(key: str, own_prefix: str | tuple[str, ...]) -> bool:
+    prefixes = (own_prefix,) if isinstance(own_prefix, str) else tuple(own_prefix)
+    path = key[1:].replace("#", "\\").lower()
+    return key.startswith("#") and any(path.startswith(p) for p in prefixes)
+
+
+def mic_users(entries: list[tuple[str, float, float]], now: float, own_prefix: str | tuple[str, ...],
               ignore: list[str] = (), stale_hours: float = 12) -> list[str]:
     """Apps other than Pakito using the mic right now. A 'using it' mark older than stale_hours is
     ignored (an app that crashed mid-call never writes its stop time)."""
@@ -91,13 +102,15 @@ class CallWatcher:
 
     def __init__(self, on_change: Callable[[bool, list[str]], None], ignore: list[str] = (),
                  reader: Callable[[], list] = read_registry, clock: Callable[[], float] = time.time,
-                 own_prefix: str | None = None, interval: float = 1.0):
+                 own_prefix: str | tuple[str, ...] | None = None, interval: float = 1.0):
         self.on_change = on_change
         self.ignore = list(ignore)
         self.reader = reader
         self.clock = clock
-        # everything under Pakito's Python folder is Pakito itself
-        self.own_prefix = (own_prefix or str(Path(sys.prefix))).lower().rstrip("\\") + "\\"
+        # everything under Pakito's Python folders is Pakito itself
+        if isinstance(own_prefix, str):
+            own_prefix = own_prefix.lower().rstrip("\\") + "\\"
+        self.own_prefix = own_prefix or own_prefixes()
         self.interval = interval
         self.apps: list[str] = []
         self._stop = threading.Event()

@@ -47,3 +47,21 @@ def test_watcher_survives_registry_errors():
     w = CallWatcher(lambda *a: None, reader=boom, own_prefix=OWN)
     w.poll()
     assert not w.on_call
+
+
+def test_venv_python_is_still_pakito():
+    """Nov 6, a friend's PC: Pakito ran from a .venv, whose python.exe only launches the base install's
+    python.exe, and that one holds the mic. Pakito took itself for a call and hung up on every conversation."""
+    venv = "c:\\users\\acer\\documents\\github\\pakito-jarvis\\.venv\\"
+    base = "c:\\users\\acer\\appdata\\local\\programs\\python\\python313\\"
+    real = "#C:#Users#Acer#AppData#Local#Programs#Python#Python313#python.exe"
+    assert mic_users([(real, NOW - 5, 0)], NOW, venv) == ["python.exe"]          # the old behaviour
+    assert mic_users([(real, NOW - 5, 0), (ZOOM, NOW - 5, 0)], NOW, (venv, base)) == ["Zoom.exe"]
+
+
+def test_own_prefixes_include_the_base_python():
+    import sys
+    from assistant.calls import own_prefixes
+    p = own_prefixes()
+    assert any(sys.base_prefix.lower().rstrip("\\/") in x for x in p)
+    assert all(x.endswith("\\") for x in p)
