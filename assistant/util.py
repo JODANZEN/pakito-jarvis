@@ -12,6 +12,12 @@ from pathlib import Path
 from typing import Callable
 
 
+
+# What Pakito starts never gets its console: Electron apps (Obsidian, VS Code) and browsers otherwise print their
+# own logs into Pakito's window. DETACHED_PROCESS | CREATE_NO_WINDOW on Windows; plain on Mac/Linux.
+QUIET = dict(stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+             **({"creationflags": 0x00000008 | 0x08000000} if sys.platform == "win32" else {}))
+
 def now_iso(ts: float) -> str:
     return datetime.fromtimestamp(ts).isoformat(timespec="seconds")
 
@@ -133,7 +139,7 @@ def make_launcher(browser_exe: str | None):
             if browser_exe.endswith(".app"):                        # Mac: open -a "Opera GX" <url>
                 subprocess.Popen(["open", "-a", browser_exe, target])
             else:
-                subprocess.Popen([browser_exe, target])
+                subprocess.Popen([browser_exe, target], **QUIET)
         else:
             launch(target)
 
@@ -159,16 +165,28 @@ def launch_app_quietly(target: str) -> None:
         subprocess.Popen(["open", "-a", target])
 
 
+def startfile_detached(target: str) -> None:
+    """os.startfile, but from a tiny helper process with no console, so the app it opens (Obsidian, VS Code...)
+    can't attach to Pakito's console and print its logs there. (explorer.exe would do it too, but it splits
+    arguments on commas, which breaks search links.)"""
+    py = Path(sys.executable)
+    pyw = py.with_name("pythonw.exe")
+    subprocess.Popen([str(pyw if pyw.exists() else py), "-c", "import os, sys; os.startfile(sys.argv[1])", target],
+                     **QUIET)
+
+
 def launch(target: str) -> None:
     """Open a URL/URI with the default handler, or run a command (e.g. 'code')."""
     if target.startswith("file:") and "#" in target:
         target = target.split("#", 1)[0]       # the default PDF app can't take a page anchor
     is_uri = ":" in target and not os.path.isabs(target)
     if sys.platform == "win32":
+        # Never let what we open share Pakito's console: Electron apps (Obsidian, VS Code, Discord) attach to it
+        # and print their own logs into Pakito's window ("Checking for update using Github ... ERR_...").
         if is_uri or os.path.exists(target):
-            os.startfile(target)  # type: ignore[attr-defined]
+            startfile_detached(target)
         else:
-            subprocess.Popen(target, shell=True)
+            subprocess.Popen(target, shell=True, **QUIET)
     elif sys.platform == "darwin":
         from . import macos
         macos.launch(target)
@@ -271,13 +289,13 @@ def open_in_editor(paths: list[str]) -> None:
     import shutil
     if shutil.which("code"):
         if sys.platform == "win32":
-            subprocess.Popen(["cmd", "/c", "code", *paths], creationflags=0x08000000)
+            subprocess.Popen(["cmd", "/c", "code", *paths], **QUIET)
         else:
             subprocess.Popen(["code", *paths])
         return
     for p in paths:
         if sys.platform == "win32":
-            os.startfile(p)  # type: ignore[attr-defined]
+            startfile_detached(p)
         elif sys.platform == "darwin":
             subprocess.Popen(["open", p])
         else:

@@ -14,6 +14,7 @@ turn it off, "dictation_model", "vocabulary": ["Taylor", "Lagrangian", ...] for 
 from __future__ import annotations
 
 import array
+import asyncio
 import io
 import sys
 import threading
@@ -229,7 +230,7 @@ class Transcriber:
             temperature=0,
             automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
             **({"thinking_config": types.ThinkingConfig(thinking_budget=0)} if quick else {}))   # no "thinking": faster
-        models = [self.model] if self.model else self._candidates()
+        models = [self.model] if self.model else await asyncio.to_thread(self._candidates)   # never block the loop
         err = None
         for m in models:
             try:
@@ -248,16 +249,76 @@ class Transcriber:
         raise RuntimeError(f"no transcription model worked: {err}")
 
 
+def window_id():
+    """Something that identifies the window you're typing into, to notice if you switched away meanwhile."""
+    try:
+        if sys.platform == "win32":
+            import ctypes
+            return int(ctypes.windll.user32.GetForegroundWindow())
+        if sys.platform == "darwin":
+            from .macos import frontmost
+            return frontmost()[1] or None
+    except Exception:
+        pass
+    return None
+
+
+def copy_only(text: str) -> bool:
+    """Put text on the clipboard without pasting it."""
+    if sys.platform == "win32":
+        return _clip_set(text)
+    if sys.platform == "darwin":
+        from .macos import clipboard_set
+        return clipboard_set(text)
+    print(text)
+    return True
+
+
 class Dictation:
-    """The hold-to-dictate flow. Everything with side effects is injectable for tests."""
+    """The hold-to-dictate flow. Everything with side effects is injectable for tests.
+
+    Dictations go one at a time, in the order you spoke them (an asyncio.Lock is first-come first-served), so a slow
+    one can't make the next paste first. Each try has a time limit and one retry; a dictation that still fails is
+    saved (fallback, e.g. to the inbox through the voice-notes pipeline) instead of lost. If you switched windows
+    while it was transcribing, the text goes to the clipboard instead of into whatever you're in now."""
 
     def __init__(self, hub, transcribe, recorder_factory=Recorder, typer=paste, app=target_app,
-                 beep: Callable[[str], None] = lambda k: None, log: Callable[..., None] = print):
+                 beep: Callable[[str], None] = lambda k: None, log: Callable[..., None] = print,
+                 notify: Callable[[str, str], None] | None = None, fallback: Callable[[bytes, float], None] | None = None,
+                 window=window_id, copier=copy_only, timeout: Callable[[float], float] = lambda secs: 15 + secs / 4,
+                 retry_wait: float = 1.5):
         self.hub, self.transcribe = hub, transcribe
         self.recorder_factory, self.typer, self.app = recorder_factory, typer, app
         self.beep, self.log = beep, log
+        self.notify = notify or getattr(hub, "notify", lambda t, m: None)
+        self.fallback, self.window, self.copier, self.timeout = fallback, window, copier, timeout
+        self.retry_wait = retry_wait
         self.rec = None
         self.cancelled = False
+        self._lock = None
+        self.waiting = 0                     # dictations recorded but not pasted yet
+        self.current: dict | None = None     # the one being transcribed: {"seconds", "since", "try"}
+        self.last: dict | None = None        # how the last one ended
+
+    def status(self) -> dict:
+        """For Pakito's dictation_status tool: is anything still being transcribed?"""
+        out = {"waiting": self.waiting}
+        if self.current:
+            out["transcribing"] = {"seconds_of_audio": round(self.current["seconds"], 1),
+                                   "for_seconds": round(time.time() - self.current["since"]),
+                                   "try": self.current["try"]}
+        if self.last:
+            out["last"] = self.last
+        if not self.waiting and not self.current:
+            out["note"] = "Nothing pending: every dictation was pasted (or saved, if one failed)."
+        return out
+
+    def _pet(self) -> None:
+        if self.waiting:
+            more = f" ({self.waiting - 1} en cola)" if self.waiting > 1 else ""
+            self.hub.pet.set("think", note=f"✍ transcribiendo…{more}")
+        else:
+            self.hub.pet.set("idle", note="")
 
     def press(self) -> None:
         if getattr(self.hub.pet, "on_call", False):
@@ -278,7 +339,12 @@ class Dictation:
         if self.rec:
             self.rec.stop()
             self.rec = None
-        self.hub.pet.set("idle", note="")
+        self._pet()
+
+    def _event(self, secs: float, ok: bool, t0: float, **extra) -> None:
+        self.hub.events.append({"time": time.strftime("%Y-%m-%dT%H:%M:%S"), "ts": time.time(), "source": "voice",
+                                "tool": "dictation", "args": {"seconds": round(secs, 1), **extra.pop("args", {})},
+                                "ok": ok, "ms": round((time.time() - t0) * 1000), **extra})
 
     async def release(self) -> str | None:
         if not self.rec:
@@ -286,28 +352,73 @@ class Dictation:
         rec, self.rec = self.rec, None
         wav, secs = rec.stop()
         if self.cancelled or secs < MIN_SEC:
-            self.hub.pet.set("idle", note="")
+            self._pet()
             return None
         if speech_seconds(wav) < MIN_SPEECH_SEC:            # nothing said: don't even ask Gemini (it can invent text)
-            self.hub.pet.set("idle", note="")
+            self._pet()
             self.log("✍ Didn't hear anything: check the mic level.")
             return None
         self.beep("off")
-        app = self.app()
-        self.hub.pet.set("think", note="✍ escribiendo…")
+        app, win = self.app(), self.window()
+        if self._lock is None:
+            self._lock = asyncio.Lock()
+        self.waiting += 1
+        self._pet()
+        if self.waiting > 1:
+            self.log(f"✍ {secs:.0f} s recorded; {self.waiting - 1} ahead of it, it goes after them.")
         t0 = time.time()
         try:
-            text = await self.transcribe(wav, app)
-        except Exception as e:
-            self.log(f"✍ Couldn't transcribe: {e}")
-            self.hub.pet.set("idle", note="")
+            async with self._lock:                          # first come, first pasted
+                return await self._transcribe_and_type(wav, secs, app, win, t0)
+        finally:
+            self.waiting -= 1
+            self.current = None
+            self._pet()
+
+    async def _transcribe_and_type(self, wav: bytes, secs: float, app: str, win, t0: float) -> str | None:
+        text, err = None, None
+        for attempt in (1, 2):
+            self.current = {"seconds": secs, "since": time.time(), "try": attempt}
+            try:
+                text = await asyncio.wait_for(self.transcribe(wav, app), timeout=self.timeout(secs))
+                err = None
+                break
+            except asyncio.TimeoutError:
+                err = f"Gemini took over {self.timeout(secs):.0f} s"
+            except Exception as e:
+                err = f"{type(e).__name__}: {str(e)[:120]}"
+            if attempt == 1:
+                self.log(f"✍ Slow/failed ({err}); trying once more…")
+                await asyncio.sleep(self.retry_wait)
+        if err:
+            self.beep("busy")
+            saved = False
+            if self.fallback:
+                try:
+                    self.fallback(wav[44:], secs)              # raw audio -> saved, transcribed into the inbox later
+                    saved = True
+                except Exception:
+                    pass
+            where = "Saved the audio: it lands in your inbox as 'Dictado sin pegar'." if saved else ""
+            self.log(f"✍ Couldn't transcribe ({err}). {where}")
+            self.notify("✍ Dictado falló", (err + (". " + where if where else ""))[:200])
+            self.last = {"ok": False, "error": err, "saved_to_inbox": saved}
+            self._event(secs, False, t0, error=err, args={"saved_to_inbox": saved})
             return None
-        self.hub.pet.set("idle", note="")
         if not text:
+            self.last = {"ok": True, "chars": 0, "note": "heard no words"}
             return None
-        ok = self.typer(text)
-        self.hub.events.append({"time": time.strftime("%Y-%m-%dT%H:%M:%S"), "ts": time.time(), "source": "voice",
-                                "tool": "dictation", "args": {"seconds": round(secs, 1), "chars": len(text)},
-                                "ok": bool(ok), "ms": round((time.time() - t0) * 1000)})
-        self.log(f"✍ {len(text)} chars in {time.time() - t0:.1f}s")
+        now_win = self.window()
+        moved = win is not None and now_win is not None and now_win != win
+        ok = self.copier(text) if moved else self.typer(text)
+        took = time.time() - t0
+        if moved:
+            self.notify("✍ Dictado listo", "Cambiaste de ventana: el texto está en el portapapeles (Ctrl+V).")
+            self.log(f"✍ {len(text)} chars ready, but you switched windows: it's on the clipboard.")
+        else:
+            self.log(f"✍ {len(text)} chars in {took:.1f}s")
+        self.beep("done")
+        self.last = {"ok": bool(ok), "chars": len(text), "seconds": round(took, 1),
+                     **({"clipboard_only": True} if moved else {})}
+        self._event(secs, bool(ok), t0, args={"chars": len(text), **({"clipboard": True} if moved else {})})
         return text

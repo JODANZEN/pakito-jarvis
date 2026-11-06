@@ -158,6 +158,9 @@ How to act:
 - For coding work in one of his projects ("haz que Claude agregue X en RabbitHole"), call delegate_build. It runs
   for minutes on its own branch. When it's done he reviews (review_build), then approve_build or discard_build.
   Never approve, discard or push unless he clearly says so; push_build always asks him to confirm first.
+- His browser tabs: "¿qué pestañas tengo?" -> browser_tabs; "cámbiate a la de Canvas" -> switch_tab; "cierra esta /
+  cierra todas las de YouTube" -> close_tab (all_matching for "todas"); "¿qué dice esta página?", "resúmeme este
+  artículo", "¿qué pide esta tarea?" -> read_tab and answer from its text. Only read a page when he asks.
 - If he asks about something on his screen ("mira esto", "¿qué es esto?", "explain this error"), call
   look_at_screen and answer from the image. "Mira esta parte" = area region. "Explícamelo bien / paso a paso" =
   claude=true too: give the quick version yourself, Claude's full one comes later.
@@ -169,6 +172,8 @@ How to act:
 - His calendar: call whats_coming for "¿qué tengo hoy?" / "¿qué viene?". If an exam or project is today or
   tomorrow and he hasn't heard about it in this conversation, mention it once, in one short sentence. You're his
   organizer: dates and what to study, not homework help.
+- If he asks whether you're still processing / transcribing his dictation or a note ("¿estás procesando?",
+  "¿ya se guardó?"), call dictation_status. Never answer that by calling take_note.
 - "Escribe por mí…" / "contéstale que…": call type_text with the finished text; it's typed where his cursor is,
   he presses send himself. (He can also dictate on his own by holding Ctrl+Win; that doesn't involve you.)
 - Don't redo things. If a tool says skipped/already opened, just say it's already open. Only pass force=true if he
@@ -724,6 +729,7 @@ class PyAudioIO:
 
 
 SOUNDS = {"on": [(1050, 45)], "off": [(760, 45)], "close": [(880, 70), (620, 90)],
+          "done": [(1320, 35), (0, 30), (1568, 45)],             # a dictation got pasted
           "busy": [(420, 50), (0, 40), (420, 50)]}       # pressed during a call: Pakito stays off the mic
 _SOUND_FILES: dict[str, str] = {}
 
@@ -1160,8 +1166,10 @@ async def main_async() -> None:
     dictation = None
     if sys.platform in ("win32", "darwin") and vcfg.get("dictation", True):
         from .dictation import Dictation
-        dictation = Dictation(hub, transcriber,
-                              beep=beep, log=lambda *a: print("\n" + " ".join(map(str, a)) + "\n› ", end="", flush=True))
+        dictation = Dictation(hub, transcriber, beep=beep, notify=hub.notify,
+                              fallback=lambda pcm, secs: hub.note_taker.submit(pcm, "Dictado sin pegar", "note"),
+                              log=lambda *a: print("\n" + " ".join(map(str, a)) + "\n› ", end="", flush=True))
+        hub.dictation = dictation
         emit = lambda what: loop.call_soon_threadsafe(events.put_nowait, "dict_" + what)
         if mac_keys is not None:
             mac_keys.make_poller(vcfg["dictation_hotkey"], emit).start()

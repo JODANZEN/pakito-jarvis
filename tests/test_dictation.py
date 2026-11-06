@@ -152,3 +152,91 @@ def test_speech_seconds():
     talk = array.array("h", [int(8000 * math.sin(i / 5)) for i in range(16000)])
     assert D.speech_seconds(D.to_wav([talk.tobytes()])) > 0.9
     assert D.speech_seconds(D.to_wav([b"\x00\x00" * 16000])) == 0
+
+
+# ---------- Oct 29: long essay dictation got slow, pasted out of order, and failures were invisible ----------
+def make2(hub, transcribe, **kw):
+    typed, beeps, notes, saved, copied = [], [], [], [], []
+    d = D.Dictation(hub, transcribe, recorder_factory=lambda: FakeRec(3.0), typer=lambda t: typed.append(t) or True,
+                    app=lambda: "Obsidian", beep=beeps.append, log=lambda *a: None,
+                    notify=lambda t, m: notes.append((t, m)), fallback=lambda pcm, secs: saved.append((len(pcm), secs)),
+                    copier=lambda t: copied.append(t) or True, **kw)
+    return d, typed, beeps, notes, saved, copied
+
+
+def test_dictations_paste_in_the_order_spoken_even_if_one_is_slow(hub):
+    calls = []
+
+    async def transcribe(wav, app):
+        calls.append(len(calls))
+        if len(calls) == 1:
+            await asyncio.sleep(0.3)                           # the first one is slow
+            return "primero"
+        return "segundo"
+
+    d, typed, *_ = make2(hub, transcribe)
+
+    async def go():
+        d.press()
+        t1 = asyncio.create_task(d.release())
+        await asyncio.sleep(0.01)
+        d.press()
+        t2 = asyncio.create_task(d.release())
+        await asyncio.sleep(0.05)
+        st = d.status()
+        assert st["waiting"] == 2 and st["transcribing"]["seconds_of_audio"] == 3.0
+        await asyncio.gather(t1, t2)
+    asyncio.run(go())
+    assert typed == ["primero", "segundo"]
+    assert d.status()["waiting"] == 0 and d.status()["last"]["ok"]
+
+
+def test_slow_gemini_gets_one_retry(hub):
+    tries = []
+
+    async def transcribe(wav, app):
+        tries.append(1)
+        if len(tries) == 1:
+            await asyncio.sleep(5)                             # stuck
+        return "salió al segundo intento"
+
+    d, typed, beeps, *_ = make2(hub, transcribe, timeout=lambda secs: 0.2, retry_wait=0)
+    d.press()
+    assert asyncio.run(d.release()) == "salió al segundo intento"
+    assert len(tries) == 2 and typed == ["salió al segundo intento"] and beeps[-1] == "done"
+
+
+def test_failed_dictation_is_saved_and_says_so(hub):
+    async def transcribe(wav, app):
+        raise ConnectionError("503 model overloaded")
+
+    d, typed, beeps, notes, saved, _ = make2(hub, transcribe, retry_wait=0)
+    d.press()
+    assert asyncio.run(d.release()) is None
+    assert not typed and beeps[-1] == "busy"
+    assert saved and saved[0][1] == 3.0                                    # the audio went to the inbox pipeline
+    assert notes and "falló" in notes[0][0] and "inbox" in notes[0][1]
+    ev = hub.events.read()[-1]
+    assert ev["tool"] == "dictation" and ev["ok"] is False and "503" in ev["error"]   # failures are logged now
+    assert d.status()["last"] == {"ok": False, "error": "ConnectionError: 503 model overloaded", "saved_to_inbox": True}
+
+
+def test_switched_windows_meanwhile_goes_to_clipboard(hub):
+    async def transcribe(wav, app):
+        return "texto del ensayo"
+
+    windows = iter([111, 222])                                             # at release, then at paste time
+    d, typed, beeps, notes, saved, copied = make2(hub, transcribe, window=lambda: next(windows))
+    d.press()
+    asyncio.run(d.release())
+    assert copied == ["texto del ensayo"] and not typed
+    assert any("portapapeles" in m for _, m in notes)
+
+
+def test_pakito_can_check_if_its_still_processing(hub):
+    async def transcribe(wav, app):
+        return "x"
+
+    hub.dictation, *_ = make2(hub, transcribe)
+    r = hub.call("dictation_status", {}, "voice")
+    assert r["waiting"] == 0 and "Nothing pending" in r["note"]

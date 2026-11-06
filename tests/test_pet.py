@@ -168,3 +168,20 @@ def test_bubble_text_never_leaves_the_frame():
     assert fit_lines("hola\n⚙ play music", width, lines, measure) == "hola\n⚙ play music"
     url = "https://www.youtube.com/results?search_query=" + "x" * 80   # one huge word gets split, not overflowed
     assert all(measure(r) <= width for r in fit_lines(url, width, lines, measure).split("\n"))
+
+
+def test_a_new_pakibot_replaces_the_old_one():
+    """Oct 23: after updating, a quick restart kept the OLD Pakibot (old code) and the new one quit."""
+    import socket
+    import threading
+    from assistant.pet import listen_for_quit, take_over
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+    old = take_over(port)
+    assert old is not None
+    old_quit = listen_for_quit(old)
+    new = take_over(port, tries=100, wait=0.05)                # the new one asks the old one to leave
+    assert new is not None and old_quit.wait(2)                 # old one was told to close; new one holds the lock
+    new.close()

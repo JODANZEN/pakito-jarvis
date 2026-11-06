@@ -431,9 +431,23 @@ def test_launch_strips_page_for_default_app(monkeypatch):
     from assistant import util
     opened = []
     monkeypatch.setattr(util.sys, "platform", "win32")
-    monkeypatch.setattr(util.os, "startfile", opened.append, raising=False)
+    monkeypatch.setattr(util, "startfile_detached", opened.append)
     util.launch("file:///C:/x/book.pdf#page=5")
     assert opened == ["file:///C:/x/book.pdf"]
+
+
+def test_opened_apps_never_share_pakitos_console(monkeypatch):
+    """Nov 6: Obsidian (opened with obsidian://open) printed its update-check errors into Pakito's window."""
+    from assistant import util
+    runs = []
+    monkeypatch.setattr(util.subprocess, "Popen", lambda cmd, **kw: runs.append((cmd, kw)))
+    util.startfile_detached("obsidian://open")
+    cmd, kw = runs[0]
+    assert cmd[1:3] == ["-c", "import os, sys; os.startfile(sys.argv[1])"] and cmd[3] == "obsidian://open"
+    assert kw["stdout"] is util.subprocess.DEVNULL and kw["stderr"] is util.subprocess.DEVNULL
+    monkeypatch.setattr(util.sys, "platform", "win32")
+    util.launch("code")                                            # a plain command: detached too
+    assert runs[-1][1]["stdout"] is util.subprocess.DEVNULL
 
 
 # ---------------- Spotify ----------------

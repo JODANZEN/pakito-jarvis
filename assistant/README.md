@@ -212,6 +212,12 @@ Works like Wispr Flow, anywhere you can type: WhatsApp, Canvas, VS Code, email.
 - **Language:** your Spanish/English mix stays exactly as you said it; it never translates.
 - **Context:** it knows which app you're typing into, so it's casual in chats and keeps code literal in editors.
 - **It stays silent for shortcuts:** Ctrl+Win+D, Ctrl+Win+arrows and so on never trigger it, and a quick tap does nothing.
+- **Long dictation (essays):**
+  - **Order:** dictations go one at a time and paste in the order you spoke them. Keep going; they queue.
+  - **You can see where it is:** Pakibot shows "✍ transcribiendo… (2 en cola)". A rising double tick means it was pasted, a low double beep means it failed. You can also ask Pakito "¿estás procesando?".
+  - **If Gemini is slow:** each try has a time limit (15 s + a quarter of the audio's length) and one retry.
+  - **If it still fails:** the audio is saved, transcribed in the background, and lands in your inbox as "Dictado sin pegar". A notification tells you.
+  - **If you switched windows while it was transcribing:** the text goes to your clipboard (Ctrl+V) instead of into the wrong app.
 - **"Escribe por mí que…"** when talking to Pakito normally: Gemini writes the message and types it into the window you're in. You press send.
 - **Privacy:**
   - The audio goes to Gemini (free tier) and is dropped.
@@ -230,6 +236,23 @@ Pakito reads your Google Calendar: exams (🔴), study blocks (📚), classes, w
 - **Setup:** run `run-pakito.bat calendar` and paste each calendar's private link. In Google Calendar, go to ⚙ Settings → the calendar → Integrate calendar → **Secret address in iCal format**. For Canvas, use its Calendar Feed link.
 - **The links are secret.** They're stored only in `config.local.json`, which isn't committed.
 - **Refresh and offline:** Pakito refreshes every 30 min and keeps a cached copy, so it still works offline.
+
+## Your browser tabs
+The Pakito browser extension (the one lock-in uses) also lets Pakito see your tabs, when you ask:
+- "¿Qué pestañas tengo abiertas?" lists them.
+- "Cámbiate a la de Canvas" brings that tab to the front.
+- "Cierra esta" closes the tab in front; "cierra todas las de YouTube" closes every match.
+- "¿Qué dice esta página?", "resúmeme este artículo", "¿qué pide esta tarea?": Pakito reads the page's text and answers.
+
+**Install / update:** your browser's extensions page (`opera://extensions`, `chrome://extensions`) → Developer mode →
+Load unpacked → the `browser-extension` folder. If it's already loaded, press its reload button after updating.
+Version 1.1 asks for permission to read pages. It only reads one when you ask Pakito to.
+
+**Privacy:**
+- Pages that look like a bank, login or password manager are never read.
+- The logs keep that a tab was read, never its text or your tab titles.
+- Only the extension can talk to this part of Pakito; a web page can't pretend to be it.
+- Other agents using Pakito (Claude Code via MCP) don't get these tools.
 
 ## "Mira esto": Pakito looks at your screen
 Ask about what's in front of you: "¿qué es esto?", "explícame esta ecuación", "what's this error". Pakito takes **one** screenshot and answers out loud.
@@ -311,7 +334,7 @@ Then say "ask Claude …", or Gemini decides to for hard questions. It runs in t
 Typed: `claude <question>`. It counts against your Claude plan's usage, and it isn't available on the free claude.ai plan.
 
 ## Tests
-`python -m pytest tests`: 213 tests. They use a fake clock and a fake Gemini session, so nothing launches and nothing hits the network.
+`python -m pytest tests`: 231 tests. They use a fake clock and a fake Gemini session, so nothing launches and nothing hits the network.
 
 ## Voice (Gemini Live)
 

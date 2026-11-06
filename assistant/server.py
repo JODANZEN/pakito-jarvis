@@ -2,6 +2,8 @@
 
 GET  /state    -> {"locked": bool, "remaining_min": n, "label": str, "sites": [...]}
 POST /blocked  {"site": "youtube.com"} -> logged as a distraction (same site within 20 s counts once)
+POST /ext/sync {"tabs": [...], "results": [...]} -> {"cmds": [...]}: his tabs in, orders out (tabs.py).
+               Only from the extension (its origin + the X-Pakito-Ext header).
 
 Hub API: lets other brains (Claude Code via the MCP relay, later Hermes) use Pakito's tools
 on the ONE running Pakito, so there's a single focus timer, task list and log.
@@ -26,7 +28,8 @@ TOKEN_FILE = Path(__file__).with_name(".pakito_token")     # gitignored, never l
 AGENT_HIDDEN = {"ask_claude", "delegate_build", "continue_job", "open_claude_code", "free_mode",
                 # and no agent approves, discards or pushes its own work: those are Jose's calls
                 "approve_build", "discard_build", "push_build",
-                "look_at_screen", "type_text"}  # and no peeking at his screen or typing into his apps from outside
+                "look_at_screen", "type_text",   # and no peeking at his screen or typing into his apps from outside
+                "browser_tabs", "read_tab", "switch_tab", "close_tab"}   # or at his browser
 
 
 def get_token(path: Path = TOKEN_FILE) -> str:
@@ -103,7 +106,30 @@ def make_handler(hub, clock=time.time, token: str | None = None):
             self._send(state() if self.path.startswith("/state") else {"error": "not found"},
                        200 if self.path.startswith("/state") else 404)
 
+        def _from_extension(self) -> bool:
+            """The Pakito browser extension: its own origin plus a header a web page can't send (the preflight for
+            it is never approved)."""
+            origin = self.headers.get("Origin", "")
+            return origin.startswith(("chrome-extension://", "moz-extension://")) and \
+                self.headers.get("X-Pakito-Ext") == "1"
+
         def do_POST(self):
+            if self.path.startswith("/ext/sync"):        # the extension: tabs in, orders out (tabs.py)
+                if not self._from_extension():
+                    return self._api({"error": "forbidden"}, 403)
+                n = int(self.headers.get("Content-Length") or 0)
+                try:
+                    req = json.loads(self.rfile.read(n) or b"{}")
+                except json.JSONDecodeError:
+                    req = {}
+                try:
+                    hub.blocker.ext_seen = clock()
+                except AttributeError:
+                    pass
+                wait = req.get("wait", 8)
+                wait = min(10.0, max(0.0, float(wait))) if isinstance(wait, (int, float)) else 8.0
+                cmds = hub.browser.sync(list(req.get("tabs") or []), list(req.get("results") or []), wait=wait)
+                return self._api({"cmds": cmds})
             if self.path.startswith("/call"):
                 if not self._authorized():
                     return self._api({"error": "forbidden"}, 403)

@@ -48,3 +48,75 @@ chrome.alarms.onAlarm.addListener(async () => {
   if (!s.locked) return;
   for (const t of await chrome.tabs.query({})) check(t.id, t.url);
 });
+
+// ---------- Pakito sees your tabs (assistant/tabs.py) ----------
+// Every few seconds: send Pakito the open tabs + results of what it asked, get back what to do next
+// (switch to a tab, close tabs, open a link, read a page's text). Pakito holds the request open until it has
+// something, so orders arrive at once. Nothing happens unless you ask Pakito.
+let results = [];
+let syncing = false;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+async function tabSnapshot() {
+  const wins = await chrome.windows.getAll({});
+  const focused = new Set(wins.filter((w) => w.focused).map((w) => w.id));
+  const tabs = await chrome.tabs.query({});
+  return tabs
+    .filter((t) => t.url && !t.url.startsWith("chrome-extension://"))
+    .map((t) => ({ id: t.id, windowId: t.windowId, title: t.title || "", url: t.url || "",
+                   active: t.active, focused: focused.has(t.windowId) }));
+}
+
+async function run(cmd) {
+  try {
+    if (cmd.op === "activate") {
+      const t = await chrome.tabs.update(cmd.tab, { active: true });
+      await chrome.windows.update(t.windowId, { focused: true });
+      return { ok: true };
+    }
+    if (cmd.op === "close") {
+      await chrome.tabs.remove(cmd.tabs || [cmd.tab]);
+      return { ok: true };
+    }
+    if (cmd.op === "open") {
+      await chrome.tabs.create({ url: cmd.url });
+      return { ok: true };
+    }
+    if (cmd.op === "read") {
+      const [r] = await chrome.scripting.executeScript({
+        target: { tabId: cmd.tab },
+        func: () => (document.body ? document.body.innerText : ""),
+      });
+      return { text: String((r && r.result) || "").slice(0, 60000) };
+    }
+    return { ok: true };
+  } catch (e) {
+    return { error: "The browser said: " + (e && e.message ? e.message : String(e)) };
+  }
+}
+
+async function syncLoop() {
+  if (syncing) return;
+  syncing = true;
+  while (true) {
+    const sending = results;
+    results = [];
+    try {
+      const body = JSON.stringify({ tabs: await tabSnapshot(), results: sending, wait: 3 });
+      const r = await fetch(API + "/ext/sync", {
+        method: "POST", headers: { "Content-Type": "application/json", "X-Pakito-Ext": "1" }, body,
+      });
+      if (!r.ok) { await sleep(15000); continue; }       // an older Pakito without this: check again later
+      const { cmds = [] } = await r.json();
+      for (const c of cmds) results.push({ id: c.id, ...(await run(c)) });
+    } catch (e) {
+      results = sending.concat(results);                 // Pakito isn't running: keep them, try again
+      await sleep(3000);
+    }
+  }
+}
+
+syncLoop();
+chrome.runtime.onStartup.addListener(syncLoop);
+chrome.runtime.onInstalled.addListener(syncLoop);
+chrome.alarms.onAlarm.addListener(syncLoop);             // the 30-s "sweep" alarm also revives the loop

@@ -513,13 +513,10 @@ def main() -> None:
         return
     from .config import data_dir, device_path, load_config
     from .server import PORT, TOKEN_FILE
-    # one Pakibot at a time: hold a local port as a lock for as long as this window lives
-    import socket
-    lock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    try:
-        lock.bind(("127.0.0.1", PORT + 2))
-    except OSError:
-        return                                  # another Pakibot is already on screen
+    # one Pakibot at a time: the newest one wins (a quick Pakito restart used to leave the OLD one, old code and all)
+    lock = take_over(PORT + 2)
+    if lock is None:
+        return
     cfg = load_config()
     pcfg = cfg.get("pet") or {}
     try:
@@ -529,7 +526,67 @@ def main() -> None:
         return
     win = PetWindow(f"http://127.0.0.1:{PORT}", token, int(pcfg.get("scale", 3)),
                     device_path(cfg, data_dir(cfg) / "state" / "pet_pos.json"))    # each screen keeps its own spot
+    quit_flag = listen_for_quit(lock)
+    win.root.after(300, lambda: _watch_quit(win, quit_flag))
     win.root.mainloop()
+
+
+def _watch_quit(win, flag: threading.Event) -> None:
+    if flag.is_set():
+        win.root.destroy()
+    else:
+        win.root.after(300, lambda: _watch_quit(win, flag))
+
+
+def take_over(port: int, tries: int = 25, wait: float = 0.2):
+    """Hold 127.0.0.1:port as the 'one Pakibot' lock. If an older Pakibot holds it, ask it to close and take its
+    place. Returns the listening socket, or None if the old one never let go."""
+    import socket
+    for i in range(tries):
+        lock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        if sys.platform != "win32":     # Mac/Linux: a just-closed handoff connection mustn't block the port
+            lock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)   # (on Windows this would allow stealing)
+        try:
+            lock.bind(("127.0.0.1", port))
+            lock.listen(1)
+            return lock
+        except OSError:
+            lock.close()
+        if i == 0:
+            try:
+                with socket.create_connection(("127.0.0.1", port), timeout=1) as c:
+                    c.sendall(b"quit")
+            except OSError:
+                pass
+        time.sleep(wait)
+    return None
+
+
+def listen_for_quit(lock) -> threading.Event:
+    """A newer Pakibot connecting to our lock port means: close, it's taking over."""
+    flag = threading.Event()
+
+    def run():
+        while True:
+            try:
+                conn, _ = lock.accept()
+            except OSError:
+                return
+            with conn:
+                try:
+                    if conn.recv(16).startswith(b"quit"):
+                        conn.settimeout(1)
+                        try:
+                            conn.recv(16)       # let the new one hang up first, so the port frees at once
+                        except OSError:
+                            pass
+                        flag.set()
+                        lock.close()
+                        return
+                except OSError:
+                    pass
+    threading.Thread(target=run, daemon=True).start()
+    return flag
 
 
 if __name__ == "__main__":

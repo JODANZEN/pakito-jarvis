@@ -82,7 +82,8 @@ VERB = {"open_url": "opened", "open_app": "opened", "play_music": "music:", "web
         "add_task": "added task", "complete_task": "finished"}
 
 
-REDACT = {"type_text": {"text"}}      # tool -> arg names whose content never goes in the logs
+REDACT = {"type_text": {"text"},      # tool -> arg names (and result keys) whose content never goes in the logs
+          "read_tab": {"text"}, "browser_tabs": {"tabs"}}
 
 
 def _target(name: str, args: dict) -> str:
@@ -197,6 +198,9 @@ class Hub:
         self.conversations = log("conversations.jsonl")
         self.latency = log("latency.jsonl")       # seconds from letting go to its voice
         self.note_taker = None                    # voice: saves notes from his own recording (voice_notes.py)
+        self.dictation = None                     # voice: the Ctrl+Win dictation (its status tool reads it)
+        from .tabs import BrowserTabs
+        self.browser = BrowserTabs(clock)         # his browser tabs, through the Pakito extension (tabs.py)
         self.pending_note_audio: bytes | None = None   # voice puts his recent turns here right before take_note
         self.tools: dict[str, Tool] = {}
         self._register_builtins()
@@ -256,13 +260,15 @@ class Hub:
                     result, ok = {"error": f"{type(e).__name__}: {e}"}, False
                 if ok and key:
                     self.recent_opens[key] = t0
-        if name in REDACT:                               # never keep what he dictated/typed in the logs
+        logged = result
+        if name in REDACT:                               # never keep what he dictated/typed/read in the logs
             args = {k: (f"<{len(str(v))} chars>" if k in REDACT[name] else v) for k, v in args.items()}
-            result = {k: v for k, v in (result or {}).items() if k not in REDACT[name]} if isinstance(result, dict) else result
+            logged = ({k: (f"<{len(str(v))} chars>" if k in REDACT[name] else v) for k, v in result.items()}
+                      if isinstance(result, dict) else result)
         self.events.append({
             "time": now_iso(t0), "ts": t0, "source": source, "tool": name, "args": args, "ok": ok,
             "episode": self.learner.current["id"] if self.learner.current else None,
-            "result": result if len(str(result)) < 500 else str(result)[:500],
+            "result": logged if len(str(logged)) < 500 else str(logged)[:500],
             "ms": round((self.clock() - t0) * 1000),
         })
         if ok and source != "routine":
@@ -548,6 +554,69 @@ class Hub:
             except Exception as e:
                 return {"error": f"search failed ({type(e).__name__}); answer from what you know and say so"}
             return {"results": [{"title": h.get("title"), "snippet": h.get("body"), "url": h.get("href")} for h in hits]}
+
+        @self.tool("dictation_status", "Is his dictation (Ctrl+Win) or a voice note still being transcribed? What's "
+                   "waiting, how long it's been, and how the last one ended. Use for '¿estás procesando?', "
+                   "'¿ya se guardó la nota?'.")
+        def dictation_status():
+            out = self.dictation.status() if self.dictation else {"dictation": "off"}
+            nt = self.note_taker
+            if nt is not None:
+                busy = [f for f in getattr(nt, "running", []) if not f.done()]
+                out["notes_being_saved"] = len(busy)
+                d = nt.dir
+                failed = len(list(d.glob("*.json"))) if d.exists() else 0
+                if failed:
+                    out["notes_waiting_to_retry"] = failed
+            return out
+
+        @self.tool("browser_tabs", "His open browser tabs (numbered; in_front = the one he's looking at). For 'qué "
+                   "pestañas tengo', or to find one before switch_tab / close_tab / read_tab.")
+        def browser_tabs():
+            if not self.browser.connected():
+                return self.browser.ask("list")              # the 'not connected' explanation
+            tabs = self.browser.listing()
+            return {"count": len(tabs), "tabs": tabs[:40]}
+
+        @self.tool("switch_tab", "Bring one of his browser tabs to the front. tab = its number from browser_tabs, or "
+                   "words from its title/site ('la de Canvas').", _obj({"tab": S}, ["tab"]))
+        def switch_tab(tab: str):
+            t = self.browser.find(tab)
+            if not t:
+                return {"error": f"No tab like '{tab}'.", "tabs": self.browser.listing()[:25]}
+            r = self.browser.ask("activate", t["id"])
+            return r if "error" in r else {"switched_to": t["title"][:90]}
+
+        @self.tool("close_tab", "Close browser tabs. tab = a number, words from the title/site, or 'esta' (the one in "
+                   "front). all_matching=true closes every tab that matches ('cierra todas las de YouTube').",
+                   _obj({"tab": S, "all_matching": B}, ["tab"]))
+        def close_tab(tab: str, all_matching: bool = False):
+            hits = self.browser.find_all(tab) if all_matching else [t for t in [self.browser.find(tab)] if t]
+            if not hits:
+                return {"error": f"No tab like '{tab}'.", "tabs": self.browser.listing()[:25]}
+            if len(hits) > 15:
+                return {"error": f"That matches {len(hits)} tabs; say which ones."}
+            r = self.browser.ask("close", tabs=[t["id"] for t in hits])
+            return r if "error" in r else {"closed": [t["title"][:60] for t in hits]}
+
+        @self.tool("read_tab", "Read the text of one of his browser tabs, to answer about it ('¿qué dice esta página?', "
+                   "'resúmeme este artículo', 'qué pide esta tarea'). tab = number/words, omit for the one in front. "
+                   "Only when he asks about a page.", _obj({"tab": S}))
+        def read_tab(tab: str | None = None):
+            from .tabs import READ_LIMIT, is_sensitive
+            t = self.browser.find(tab)
+            if not t:
+                if not self.browser.connected():
+                    return self.browser.ask("list")
+                return {"error": f"No tab like '{tab}'.", "tabs": self.browser.listing()[:25]}
+            if is_sensitive(t):
+                return {"error": "That looks like a bank, login or password page: Pakito doesn't read those."}
+            r = self.browser.ask("read", t["id"], timeout=8)
+            if "error" in r:
+                return r
+            text = str(r.get("text") or "")
+            return {"title": t["title"][:120], "site": t["url"][:200], "text": text[:READ_LIMIT],
+                    **({"cut": f"first {READ_LIMIT} of {len(text)} characters"} if len(text) > READ_LIMIT else {})}
 
         @self.tool("current_time", "The exact time and date right now on this computer, in his time zone. Use it "
                    "when he asks the time and the conversation has gone on a while.")
