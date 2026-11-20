@@ -78,7 +78,7 @@ def test_mask_never_shows_the_key():
 
 def test_wizard_you_and_gemini_steps(tmp_path):
     p = tmp_path / "config.local.json"
-    answers = iter(["Ana", "She studies biology.", "Lima, Peru",      # you
+    answers = iter(["Ana", "She studies biology.", "Lima, Peru", "Bulgarian, English", "she/her",   # you
                     "bad-key", "good-key"])                            # gemini: retry after a bad key
     said = []
     w = sw.Wizard(ask=lambda q: next(answers), say=said.append, local=p,
@@ -91,7 +91,8 @@ def test_wizard_you_and_gemini_steps(tmp_path):
     w.gemini()
     cfg = json.loads(p.read_text())
     assert cfg["voice"]["model"] == "gemini-3.1-flash-live-preview"     # picked a model this key can use
-    assert cfg["user"] == {"name": "Ana", "about": "She studies biology."}
+    assert cfg["user"] == {"name": "Ana", "about": "She studies biology.", "languages": ["Bulgarian", "English"],
+                           "pronouns": "she/her"}
     assert cfg["voice"]["location"] == "Lima, Peru" and cfg["gemini_api_key"] == "good-key"
     assert any("didn't work" in s for s in said)
     assert not any("good-key" in s for s in said)                     # never echoes the key
@@ -151,3 +152,13 @@ def test_pasted_paths_are_cleaned():
     if clean_path("a\\ b") == "a b":                             # backslash escapes only on Mac/Linux
         assert clean_path(mac.replace(" ", "\\ ")) == mac
     assert clean_path(r"C:\Users\jdsn2\OneDrive\Second Brain") == r"C:\Users\jdsn2\OneDrive\Second Brain"
+
+
+
+def test_pakito_answers_in_their_language_not_spanish():
+    """Nov 6: a friend who speaks Bulgarian and English got answered in Spanish (the prompt hardcoded it)."""
+    from assistant.voice import language_line
+    friend = language_line({"user": {"languages": ["Bulgarian", "English"], "pronouns": "she/her"}})
+    assert "Bulgarian and English" in friend and "Never default to Spanish" in friend and "she/her" in friend
+    anyone = language_line({})
+    assert "speaking to you right now" in anyone and "Spanish" not in anyone.split("Never")[0]

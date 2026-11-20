@@ -726,7 +726,7 @@ class Hub:
 
         @self.tool("dream_questions", "Questions his Second Brain (the nightly dream) wants him to answer about himself "
                    "and his projects. Use when he asks '¿tienes preguntas para mí?' / 'what did the dream ask?'. Ask "
-                   "one at a time, in Spanish, and save each answer with dream_answer.")
+                   "one at a time, in the language he's using, and save each answer with dream_answer.")
         def dream_questions():
             from .debrief import open_dream_questions
             qs = open_dream_questions(self)

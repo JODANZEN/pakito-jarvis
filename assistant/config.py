@@ -15,6 +15,8 @@ DEFAULTS: dict = {
     "user": {
         "name": None,                 # e.g. "Jose". None = "the user"
         "about": "",                  # one line Pakito and Claude get, e.g. "He's a CS + Physics student at ASU."
+        "languages": [],              # e.g. ["English", "Bulgarian"]; empty = whatever you speak to it
+        "pronouns": "",               # e.g. "she/her"; empty = Pakito's default
     },
     # More than one computer sharing the same folder (e.g. PC + Mac over OneDrive). The primary one keeps the
     # plain file names; every other one writes its own logs (events.<name>.jsonl...) and reads everyone's.

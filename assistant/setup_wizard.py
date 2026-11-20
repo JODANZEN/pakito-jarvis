@@ -176,7 +176,11 @@ class Wizard:
         about = self.q("One line about you, so answers fit (e.g. \"I'm a CS student at ASU\"; Enter to skip)",
                        u.get("about"))
         city = self.q("Your city, for weather and \"near me\" (e.g. Tempe, AZ)", (self.cfg.get("voice") or {}).get("location"))
-        self.save({"user": {"name": name or None, "about": about}, "voice": {"location": city or None}})
+        langs = self.q("Languages you'll talk to Pakito in (e.g. English, Bulgarian)", ", ".join(u.get("languages") or []))
+        pron = self.q("How Pakito should refer to you (he / she / they; Enter to skip)", u.get("pronouns"))
+        self.save({"user": {"name": name or None, "about": about,
+                            "languages": [l.strip() for l in langs.split(",") if l.strip()], "pronouns": pron},
+                   "voice": {"location": city or None}})
 
     # 2
     def gemini(self) -> None:

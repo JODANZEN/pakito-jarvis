@@ -79,6 +79,19 @@ def log_error(hub: Hub, exc: BaseException) -> None:
         pass
 
 
+def language_line(cfg: dict) -> str:
+    """Which language to answer in: the one they're speaking right now (Pakito isn't only for Spanish)."""
+    u = cfg.get("user") or {}
+    langs = [l.strip() for l in (u.get("languages") or []) if str(l).strip()]
+    pron = (u.get("pronouns") or "").strip()
+    line = ("Answer in the language they're speaking to you right now" +
+            (f" (they speak {', '.join(langs[:-1]) + ' and ' + langs[-1] if len(langs) > 1 else langs[0]})"
+             if langs else "") + ", and switch when they switch. Never default to Spanish or English on your own.")
+    if pron:
+        line += f" Refer to them as {pron} (this prompt says 'he' only out of habit)."
+    return line
+
+
 def now_line(when: datetime | None = None) -> str:
     """'Friday October 23 2026, 9:34 AM (MST, UTC-07:00)': with the zone, so Gemini doesn't guess one."""
     t = (when or datetime.now()).astimezone()
@@ -125,13 +138,13 @@ def system_prompt(hub: Hub, vcfg: dict) -> str:
     dq = None if st["phase"] == "focus" and st.get("lockin") else offer_dream_question(hub)
     if dq:
         claude_txt += ("\nHis Second Brain (the nightly dream) has a question for him. After handling what he asked, "
-                       "if he isn't in a hurry, ask it once, in Spanish, in your own short words; if he answers, call "
+                       "if he isn't in a hurry, ask it once, in the language he's using, in your own short words; if he answers, call "
                        f"dream_answer(id, answer) with his words. If he says later / not now, drop it: [{dq['id']}] "
                        f"{dq['q'][:300]}")
     dream = dream_line(hub)
     if dream:
         claude_txt += ("\nFrom last night's dream (Claude processed his logs while he slept). After handling what he "
-                       "asked, tell him this once, in one short sentence, in Spanish: " + dream[:300])
+                       "asked, tell him this once, in one short sentence, in the language he's using: " + dream[:300])
     where = f" They're in {vcfg['location']} unless they say otherwise." if vcfg.get("location") else ""
     return f"""You are Pakito, the voice assistant on the Windows PC of {user_line(hub.cfg)}.
 Now: {now_line()}.{where}
@@ -139,7 +152,7 @@ The time and date: read them from "Now" (this computer's clock, already in his t
 another zone, don't search for it). If the conversation has gone on a while, call current_time.
 
 How to talk: short and natural, one or two sentences. This is speech, so no lists or markdown.
-Answer in whatever language he speaks (English or Spanish, he switches).
+{language_line(hub.cfg)}
 
 How to act:
 - To do something on the PC, call the tool right away, then confirm in a few words ("Listo, Canvas is open").
