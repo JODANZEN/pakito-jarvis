@@ -53,7 +53,8 @@ click/drag, two fingers to scroll, "mouse a la pantalla 2" by voice. Next: tune 
   chosen by voice. Point/pinch to pick a text box, then "Pakito, escribe esto aquí".
 - Arms get tired fast: never the main way to point. Project Gameface (head pointer) as a no-hands option.
 
-**Phase 5: packaging**
+**Phase 5: packaging**: ✅ Nov 23: `update-pakito` (pull + install + health check), `check all`, optional extras in
+setup (hands-free, hand control, tablet). Not doing uv for now: the setup scripts already install in one step.
 - uv project + lockfile + one bootstrap script per OS, so the Denver PC and the Mac install in one command.
 - Optional extras (wake word, gestures) so a voice-only install stays light.
 - Per-computer settings (screens, mic, layouts, folders) kept out of the shared OneDrive config.

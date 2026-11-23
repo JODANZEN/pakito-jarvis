@@ -412,6 +412,70 @@ async def check_notes(client, seconds: int = 30) -> None:
     print("That's exactly what a voice note would save (nothing went to your inbox).")
 
 
+def check_all(say=print) -> list[tuple[str, str, str]]:
+    """One screen that says what works on this computer and what to do about what doesn't (for a new PC)."""
+    import importlib.util
+    import os
+    from .config import gemini_key, load_config
+    cfg = load_config()
+    rows: list[tuple[str, str, str]] = []           # (✅ / ⚠ / ➖, what, detail or fix)
+
+    def row(mark, what, detail=""):
+        rows.append((mark, what, detail))
+
+    v = sys.version_info
+    row("✅" if (3, 10) <= v[:2] <= (3, 13) else "⚠", f"Python {v.major}.{v.minor}",
+        "" if (3, 10) <= v[:2] <= (3, 13) else "Pakito needs 3.10–3.13 (run setup-pakito again)")
+    key = gemini_key(cfg)
+    if not key:
+        row("⚠", "Gemini key", "missing: run-pakito setup")
+    else:
+        from .setup_wizard import check_gemini_key
+        bad = check_gemini_key(key)
+        row("✅" if not bad else "⚠", "Gemini key", bad or "works")
+    row("✅", "Voice model", (cfg.get("voice") or {}).get("model") or PREFERRED[0])
+    vault = Path(os.path.expanduser(cfg.get("vault_path", "")))
+    if vault.is_dir():
+        dev = cfg.get("device") or {}
+        row("✅", "Notes folder", f"{vault}" + (f" (shared, this computer: {dev.get('name')})" if dev else ""))
+    else:
+        row("⚠", "Notes folder", f"{vault} doesn't exist (OneDrive not synced yet?): run-pakito setup")
+    try:
+        import pyaudio  # noqa: F401
+        from .voice import MIC, pick_mic, shared_pyaudio
+        MIC["name"] = (cfg.get("voice") or {}).get("mic")
+        row("✅", "Microphone", pick_mic(shared_pyaudio())["name"])
+    except Exception as e:
+        row("⚠", "Microphone", f"{type(e).__name__}: {e}"[:120])
+    from .claude_bridge import find_claude
+    exe = find_claude((cfg.get("claude") or {}).get("path"))
+    row("✅" if exe else "➖", "Claude Code", exe or "not installed (optional)")
+    row("✅" if (cfg.get("spotify") or {}).get("client_id") else "➖", "Spotify",
+        "connected" if (cfg.get("spotify") or {}).get("client_id") else "not connected (optional): run-pakito spotify")
+    wake = (cfg.get("voice") or {}).get("wake") or {}
+    if importlib.util.find_spec("openwakeword"):
+        row("✅", "Hands-free", "on (say 'Hey Jarvis')" if wake.get("enabled") else "installed, off ('modo manos libres')")
+    else:
+        row("➖", "Hands-free", "run-pakito pip install openwakeword")
+    if importlib.util.find_spec("mediapipe"):
+        row("✅", "Hand control", "installed ('activa las manos'); run-pakito check hands to test the camera")
+    else:
+        row("➖", "Hand control", "optional: run-pakito pip install mediapipe")
+    from .tablet import Tablet
+    tb = Tablet(cfg.get("tablet"))
+    if tb.adb():
+        st = tb.status()
+        row("✅" if st["ok"] else "⚠", "Tablet", "connected" if st["ok"] else st["error"])
+    else:
+        row("➖", "Tablet", "optional: adb not installed")
+    say("")
+    for mark, what, detail in rows:
+        say(f"  {mark} {what:<14} {detail}")
+    bad = [r for r in rows if r[0] == "⚠"]
+    say("\n" + ("All good." if not bad else f"{len(bad)} thing(s) to fix above.") + "  (➖ = optional, not set up)")
+    return rows
+
+
 def check_hands(seconds: int = 12) -> None:
     """Hand control step by step, with timings: model, each camera + driver, then a live preview (no mouse moves)."""
     import os
@@ -548,6 +612,9 @@ async def main() -> None:
         return
     if len(sys.argv) > 1 and sys.argv[1] == "wake":
         check_wake()
+        return
+    if len(sys.argv) > 1 and sys.argv[1] == "all":
+        check_all()
         return
     if len(sys.argv) > 1 and sys.argv[1] == "hands":
         check_hands()

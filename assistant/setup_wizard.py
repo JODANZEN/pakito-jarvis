@@ -387,9 +387,51 @@ class Wizard:
                 "in PowerShell:  irm https://claude.ai/install.ps1 | iex"))
             self.say("  then run `claude` once to log in. Everything else works without it.")
 
+    # 8
+    def extras(self) -> None:
+        """The optional pieces: hands-free wake word, webcam hand control, the tablet."""
+        self.header(8, "Extras (optional)")
+        try:
+            import openwakeword  # noqa: F401
+            has_wake = True
+        except ImportError:
+            has_wake = False
+        wake = (self.cfg.get("voice") or {}).get("wake") or {}
+        if has_wake and not wake.get("enabled"):
+            if self.yes("  Hands-free: say 'Hey Jarvis' instead of holding the hotkey. Turn it on?", default=False):
+                self.save({"voice": {"wake": {"enabled": True}}})
+                self.say("  ✅ On. 'Deja de escuchar' turns it off.")
+        elif wake.get("enabled"):
+            self.say("  Hands-free: on ✅")
+        try:
+            import mediapipe  # noqa: F401
+            self.say("  Webcam hand control: installed ✅ ('activa las manos')")
+        except ImportError:
+            if self.yes("  Webcam hand control (point to move the mouse, pinch to click). Install it (~90 MB)?",
+                        default=False):
+                self.say("  Installing…")
+                ok = self.pip(["install", "-q", "mediapipe"])
+                self.say("  ✅ Installed. Say 'activa las manos'." if ok else
+                         "  Didn't install. Later: run-pakito.bat pip install mediapipe")
+        from .tablet import Tablet
+        if Tablet(self.cfg.get("tablet")).adb():
+            self.say("  Tablet (adb): installed ✅ ('mira mi tablet'; run-pakito.bat check tablet to test)")
+        elif self.yes("  Do you write on an Android tablet (e.g. Galaxy Tab) and want 'mira mi tablet'?", default=False):
+            self.say("  1. Tablet: Settings → About tablet → Software information → tap Build number 7 times;")
+            self.say("     Developer options → USB debugging on (Samsung: turn off Auto Blocker first).")
+            self.say("  2. " + ("Terminal: brew install android-platform-tools" if sys.platform == "darwin" else
+                                "PowerShell: winget install Google.PlatformTools") + ", then reopen the terminal.")
+            self.say("  3. Plug it in, tap Allow on the tablet, then: run-pakito check tablet")
+
+    @staticmethod
+    def pip(args: list[str]) -> bool:
+        import subprocess
+        return subprocess.run([sys.executable, "-m", "pip", *args]).returncode == 0
+
     def run(self) -> None:
         self.say("Pakito setup. Enter keeps the value in [brackets]; you can re-run this any time.")
-        for step in (self.you, self.gemini, self.notes, self.browser, self.mic, self.spotify, self.claude):
+        for step in (self.you, self.gemini, self.notes, self.browser, self.mic, self.spotify, self.claude,
+                     self.extras):
             try:
                 step()
             except (KeyboardInterrupt, EOFError):
@@ -409,10 +451,11 @@ class Wizard:
                      " Allow them (System Settings → Privacy & Security), then start Pakito again.")
         self.say("  Try: \"pon música\", \"modo lock in\", \"abre YouTube\", \"toma nota: …\", \"recuérdame mañana…\"")
         if sys.platform == "darwin":
-            self.say("  Extras, any time:  ./run-pakito.command calendar (Google Calendar) · ./run-pakito.command check")
+            self.say("  Extras, any time:  ./run-pakito.command calendar (Google Calendar) · ./run-pakito.command check"
+                     " all (health check) · ./update-pakito.command (get the latest version)")
         else:
             self.say("  Extras, any time:  run-pakito.bat calendar (Google Calendar) · install-startup.bat (start with"
-                     " Windows) · run-pakito.bat check (test the connection)")
+                     " Windows) · run-pakito.bat check all (health check) · update-pakito.bat (get the latest version)")
 
 
 def check_gemini_key(key: str) -> str | None:

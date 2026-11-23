@@ -162,3 +162,33 @@ def test_pakito_answers_in_their_language_not_spanish():
     assert "Bulgarian and English" in friend and "Never default to Spanish" in friend and "she/her" in friend
     anyone = language_line({})
     assert "speaking to you right now" in anyone and "Spanish" not in anyone.split("Never")[0]
+
+
+def test_extras_turns_on_hands_free_and_installs_hand_control(tmp_path, monkeypatch):
+    import importlib.util
+    import sys
+    import types
+    p = tmp_path / "config.local.json"
+    monkeypatch.setitem(sys.modules, "openwakeword", types.ModuleType("openwakeword"))
+    monkeypatch.setitem(sys.modules, "mediapipe", None)                 # not installed
+    answers = iter(["y", "y", "n"])                                     # hands-free yes, hand control yes, no tablet
+    said, installed = [], []
+    w = sw.Wizard(ask=lambda q: next(answers), say=said.append, local=p)
+    w.pip = lambda args: installed.append(args) or True
+    monkeypatch.setattr("assistant.tablet.Tablet.adb", lambda self: None)
+    w.extras()
+    assert json.loads(p.read_text())["voice"]["wake"]["enabled"] is True
+    assert installed == [["install", "-q", "mediapipe"]] and any("activa las manos" in s for s in said)
+
+
+def test_check_all_lists_what_works(monkeypatch, tmp_path):
+    from assistant import check_live
+    monkeypatch.setattr("assistant.config.load_config", lambda *a, **k: {"vault_path": str(tmp_path), "voice": {}})
+    monkeypatch.setattr("assistant.config.gemini_key", lambda cfg: None)
+    monkeypatch.setattr("assistant.claude_bridge.find_claude", lambda p=None: None)
+    monkeypatch.setattr("assistant.tablet.Tablet.adb", lambda self: None)
+    out = []
+    rows = check_live.check_all(say=out.append)
+    marks = {what: mark for mark, what, _ in rows}
+    assert marks["Gemini key"] == "⚠" and marks["Notes folder"] == "✅" and marks["Tablet"] == "➖"
+    assert any("to fix above" in line for line in out)

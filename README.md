@@ -5,6 +5,13 @@ A free, fast voice assistant for Windows and Mac (Gemini Live + a hub of PC tool
 (Mac: `./run-pakito.command`) and hold Ctrl+Alt (Mac: Ctrl+Option) to talk.
 Everything else is in [assistant/README.md](assistant/README.md).
 
+**Another computer** (a second PC, a Mac): `git clone https://github.com/JODANZEN/pakito-jarvis`, run setup, and
+when it asks for the notes folder pick the same OneDrive folder: it offers to share memory with the other computer.
+Each computer keeps its own settings (mic, screens, layouts) in `assistant/config.local.json`.
+
+**Updating:** `update-pakito.bat` (Mac: `./update-pakito.command`) pulls the latest version, installs anything new,
+and runs `run-pakito.bat check all`, a one-screen health check of what works on this computer.
+
 ---
 
 ## Older: Jarvis proxy (pakito-jarvis)
