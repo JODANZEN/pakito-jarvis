@@ -25,11 +25,13 @@ from pathlib import Path
 PORT = 8765
 TOKEN_FILE = Path(__file__).with_name(".pakito_token")     # gitignored, never leaves the PC
 # Tools other brains don't get: no agent spawning agents (a build job starting more builds).
-AGENT_HIDDEN = {"ask_claude", "delegate_build", "continue_job", "open_claude_code", "free_mode",
+AGENT_HIDDEN = {"ask_claude", "delegate_build", "continue_job", "open_claude_code", "free_mode", "claude_allow",
                 # and no agent approves, discards or pushes its own work: those are Jose's calls
                 "approve_build", "discard_build", "push_build",
                 "look_at_screen", "type_text",   # and no peeking at his screen or typing into his apps from outside
-                "browser_tabs", "read_tab", "switch_tab", "close_tab"}   # or at his browser
+                "browser_tabs", "read_tab", "switch_tab", "close_tab",   # or at his browser
+                "window", "layout", "clipboard", "look_at_tablet", "hands_free",
+                "hand_control", "mouse"}                         # or move his windows / read his clipboard
 
 
 def get_token(path: Path = TOKEN_FILE) -> str:

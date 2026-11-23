@@ -56,6 +56,7 @@ VOICE_DEFAULTS = {
     "dictation_hotkey": "ctrl+windows",
     "dictation_model": None,     # None = first working Gemini flash model
     "vocabulary": [],            # extra words dictation should spell right, e.g. ["Botana", "RKKY"]
+    "wake": {},                  # hands-free: {"enabled": true, "word": "hey_jarvis", "threshold": 0.5} (wake.py)
 }
 
 END_TOOL = {
@@ -141,6 +142,14 @@ def system_prompt(hub: Hub, vcfg: dict) -> str:
                        "if he isn't in a hurry, ask it once, in the language he's using, in your own short words; if he answers, call "
                        f"dream_answer(id, answer) with his words. If he says later / not now, drop it: [{dq['id']}] "
                        f"{dq['q'][:300]}")
+    fu = None if dq or (st["phase"] == "focus" and st.get("lockin")) else hub.followups.offer(hub.claude.jobs)
+    if fu:
+        plan = "; ".join(fu["plan"]) if isinstance(fu.get("plan"), list) else (fu.get("plan") or "")
+        claude_txt += ("\nSomething he said he wanted to get to and hasn't (a follow-up). After handling what he asked, "
+                       "bring it up once in one short sentence and offer to hand it to Claude (followups action=do); "
+                       "if he says it's done or not needed, followups done/drop; if later, drop the subject: "
+                       f"[{fu['id']}] {fu['what'][:200]}" + (f" (said {fu['said_at'][:10]})" if fu.get("said_at") else "")
+                       + (f". Plan: {plan[:300]}" if plan else ""))
     dream = dream_line(hub)
     if dream:
         claude_txt += ("\nFrom last night's dream (Claude processed his logs while he slept). After handling what he "
@@ -168,12 +177,26 @@ How to act:
 - If he says "save that as a routine" or asks what he repeats, use routine_suggestions / save_routine.
 - For hard questions (explain a concept properly, plan something, compare options, research), call
   ask_claude, say "let me check with Claude", and keep chatting; the answer will be handed to you when it's ready.
+  Claude can read and write his notes. If an answer says Claude was blocked from something (his calendar, a site),
+  tell him in one sentence; if he says yes / "dale permiso", call claude_allow (it asks Claude again by itself).
 - For coding work in one of his projects ("haz que Claude agregue X en RabbitHole"), call delegate_build. It runs
   for minutes on its own branch. When it's done he reviews (review_build), then approve_build or discard_build.
   Never approve, discard or push unless he clearly says so; push_build always asks him to confirm first.
 - His browser tabs: "¿qué pestañas tengo?" -> browser_tabs; "cámbiate a la de Canvas" -> switch_tab; "cierra esta /
   cierra todas las de YouTube" -> close_tab (all_matching for "todas"); "¿qué dice esta página?", "resúmeme este
   artículo", "¿qué pide esta tarea?" -> read_tab and answer from its text. Only read a page when he asks.
+- His windows (window): "pon Spotify en la pantalla 2", "VS Code a la izquierda", "minimiza esto", "maximiza Claude",
+  "cámbiate a la terminal", "cierra todas las de Chrome" (asks first). Several steps in one sentence = several calls,
+  in order. Layouts: "modo trabajo" -> layout apply; "guarda esto como modo X" -> layout save. Copy/paste between
+  apps -> clipboard ("copia esto", "pégalo en Claude"; never press Enter for him). "Abre Claude Code en <folder>
+  en la pantalla 2" -> open_claude_code with screen. "Para / detente / cancela" -> stop_actions.
+- Hand control (hand_control, experimental): "activa las manos" / "quita las manos". With it he points and pinches;
+  "mouse a la pantalla 2" -> mouse screen; "click" / "doble click" -> mouse; "escribe esto aquí" -> type_text.
+- Hands-free (hands_free): "modo manos libres" turns on the wake word, "deja de escuchar" turns it off. In a
+  hands-free conversation keep answers short; when he says thanks / that's all, call end_conversation.
+- His tablet (handwritten work): "mira mi tablet / take a look / revisa lo que hice" -> look_at_tablet (you're the
+  tutor: where it goes wrong + a hint). "Mándaselo a ChatGPT / a Claude / cópialo" -> look_at_tablet
+  send_to=clipboard; tell him it's copied (Ctrl+V in his chat). "Pégalo ahí" -> also paste=true.
 - If he asks about something on his screen ("mira esto", "¿qué es esto?", "explain this error"), call
   look_at_screen and answer from the image. "Mira esta parte" = area region. "Explícamelo bien / paso a paso" =
   claude=true too: give the quick version yourself, Claude's full one comes later.
@@ -202,6 +225,68 @@ Done recently (oldest first):
 
 
 LONG_SESSIONS = {"ok": True}      # turned off for this run if the model rejects compression/resumption
+CONNECT_TRIES = (6.0, 8.0, 12.0)  # seconds per try to reach Gemini (a normal connect takes 1–2 s)
+
+
+def _race_addresses() -> None:
+    """Try Google's addresses in parallel instead of one after another (what browsers do, 'happy eyeballs').
+    Nov 20: the connect hung on one address until the 10 s limit ran out, so the turn died even though the
+    internet was fine. google-genai doesn't let us pass this, so wrap its websocket connect once."""
+    try:
+        import functools
+        from google.genai import live as glive
+        if getattr(glive.ws_connect, "_pakito", False):
+            return
+        wrapped = functools.partial(glive.ws_connect, happy_eyeballs_delay=0.25, interleave=1)
+        wrapped._pakito = True
+        glive.ws_connect = wrapped
+    except Exception:
+        pass
+
+
+async def open_live(stack: contextlib.AsyncExitStack, client, model: str, config: dict,
+                    tries: tuple = CONNECT_TRIES, say=print):
+    """Connect to Gemini Live, retrying when the network hiccups (timeouts, resets, DNS). Other errors (quota,
+    bad config) go straight up. What you said while it connects is kept and sent once it's through."""
+    for i, limit in enumerate(tries):
+        try:
+            return await asyncio.wait_for(                 # wait_for, not asyncio.timeout: Python 3.10 too
+                stack.enter_async_context(client.aio.live.connect(model=model, config=config)), limit)
+        except (OSError, asyncio.TimeoutError):            # timeouts, resets, DNS (3.10's TimeoutError isn't OSError)
+            if i == len(tries) - 1:
+                raise
+            say(f"  (couldn't reach Gemini, trying again {i + 2}/{len(tries)}…)")
+            await asyncio.sleep(0.5)
+
+
+def is_model_gone(exc: BaseException) -> bool:
+    """Google shut the model down (preview models get retired): not quota, not network."""
+    t = str(exc).lower()
+    return "quota" not in t and any(k in t for k in ("not found", "404", "deprecat", "no longer available",
+                                                     "retired", "is not supported for", "unsupported model"))
+
+
+async def switch_model(client, vcfg: dict, say=print) -> str | None:
+    """The configured model is gone: find the first Live model this key can really use, save it, return it."""
+    from .check_live import live_models, probe, timed
+    say(f"  ({vcfg['model']} doesn't answer anymore (Google retires preview models). Looking for its replacement…)")
+    try:
+        names = await asyncio.to_thread(live_models, client)
+    except Exception:
+        return None
+    for name in names:
+        if name == vcfg["model"]:
+            continue
+        if await timed(probe(client, name), 20) == "OK":
+            vcfg["model"] = name
+            _save_voice_setting("model", name)
+            say(f"  (switched to {name} and saved it.)")
+            return name
+    return None
+
+
+def is_network_error(exc: BaseException) -> bool:
+    return isinstance(exc, (OSError, asyncio.TimeoutError)) or "handshake" in str(exc).lower()
 
 
 def _save_voice_setting(key: str, value) -> None:
@@ -223,6 +308,11 @@ def live_config(hub: Hub, vcfg: dict) -> dict:
         "output_audio_transcription": {},
         "tools": [{"function_declarations": [*hub.declarations(), END_TOOL]}],
     }
+    if "3.8" in str(vcfg.get("model", "")):
+        # 3.8 Live runs tools in the background by default (keeps talking meanwhile); Pakito's turns expect the
+        # result first, like 3.1. (It also drops thinking/affective/proactive settings: Pakito never sets them.)
+        for d in cfg["tools"][0]["function_declarations"]:
+            d.setdefault("behavior", "BLOCKING")
     if LONG_SESSIONS["ok"] and vcfg.get("long_sessions", True):
         # long talks (debrief + examen, long notes) would hit the context limit and drop: let Gemini forget the
         # oldest part instead. And a connection lasts ~10 min: a resumption handle lets Pakito reconnect to the
@@ -268,6 +358,7 @@ class Conversation:
         self.pre: list[bytes] = []               # audio captured this hold, not sent yet
         self.started = False                     # activity_start sent for this hold
         self.pending_turn: list[bytes] | None = None  # a whole turn spoken before the session connected
+        self.prebuf: list[bytes] = []            # hands-free: what he said while the session was connecting
         self.mic_running = False
         self.sent_at: float | None = None        # when you let go: used to print response latency
         self.slow_warned = False
@@ -423,7 +514,7 @@ class Conversation:
                 if isinstance(result, dict) and result.get("saving"):
                     for t in used:
                         t["saved"] = True
-                if fc.name == "look_at_screen" and self.hub.pending_image:
+                if self.hub.pending_image:                 # look_at_screen / look_at_tablet
                     img, self.hub.pending_image = self.hub.pending_image, None
                     await self.session.send_realtime_input(video=types.Blob(data=img, mime_type="image/jpeg"))
                     await asyncio.sleep(0.3)            # let the frame land before the tool result
@@ -486,6 +577,13 @@ class Conversation:
         while not self.done.is_set():
             data = await self.audio.read()
             if not self.ptt:
+                if self.session is None:          # hands-free: still connecting, keep what he says
+                    self.prebuf = (self.prebuf + [data])[-400:]
+                    continue
+                if self.prebuf:
+                    chunks, self.prebuf = self.prebuf, []
+                    for chunk in chunks:
+                        await self._send(chunk)
                 talking = self.clock() - self.last_play < 0.35
                 if talking and not self.vcfg["barge_in"]:
                     continue                     # half-duplex: don't let it hear itself
@@ -1001,16 +1099,22 @@ def physically_pressed(part: str):
     return None if vk is None else bool(gaks(vk) & 0x8000)
 
 
-async def converse(hub: Hub, vcfg: dict, client, conv_box: dict, first_press: bool = True) -> None:
+async def converse(hub: Hub, vcfg: dict, client, conv_box: dict, first_press: bool = True, audio=None) -> None:
     """One conversation: opens audio + the Live session, runs until it idles out or is hung up.
-    conv_box['conv'] exposes the Conversation to the hotkey handler."""
-    audio = await asyncio.to_thread(PyAudioIO)
+    conv_box['conv'] exposes the Conversation to the hotkey handler. audio = the wake word's mic tap (hands-free)."""
+    hands_free = audio is not None
+    if audio is None:
+        audio = await asyncio.to_thread(PyAudioIO)
     conv = Conversation(hub, vcfg, None, audio)
     conv_box["conv"] = conv
     mic = None
     connected = False
     try:
-        if conv.ptt and first_press:
+        if hands_free:                           # listen from the wake word on, while we connect
+            conv.loop = asyncio.get_running_loop()
+            mic = asyncio.create_task(conv.mic_loop())
+            conv.mic_running = True
+        elif conv.ptt and first_press:
             if not conv_box.get("key_down"):
                 return                           # just a tap: don't open a conversation
             conv.press()                         # start capturing while we connect
@@ -1023,13 +1127,12 @@ async def converse(hub: Hub, vcfg: dict, client, conv_box: dict, first_press: bo
 
         async def reconnect(handle: str):
             cfg2 = {**config, "session_resumption": {"handle": handle}}   # same prompt; no second dream line
-            return await stack.enter_async_context(client.aio.live.connect(model=vcfg["model"], config=cfg2))
+            return await open_live(stack, client, vcfg["model"], cfg2)
 
         conv.reconnect = reconnect
         async with stack:
             try:
-                session = await stack.enter_async_context(client.aio.live.connect(model=vcfg["model"],
-                                                                                  config=config))
+                session = await open_live(stack, client, vcfg["model"], config)
             except Exception as e:
                 has_search = any("google_search" in t for t in config.get("tools", []))
                 if "quota" in str(e).lower() and has_search:
@@ -1039,17 +1142,18 @@ async def converse(hub: Hub, vcfg: dict, client, conv_box: dict, first_press: bo
                     print("  (Google Search hit the free limit: using Pakito's own lookup tool instead. "
                           "`check full` turns Search back on when it works again.)")
                     config = live_config(hub, vcfg)
-                    session = await stack.enter_async_context(client.aio.live.connect(model=vcfg["model"],
-                                                                                      config=config))
-                elif "session_resumption" not in config or "quota" in str(e).lower():
-                    raise                                # quota/limits aren't about long sessions
+                    session = await open_live(stack, client, vcfg["model"], config)
+                elif is_model_gone(e) and await switch_model(client, vcfg):
+                    config = live_config(hub, vcfg)
+                    session = await open_live(stack, client, vcfg["model"], config)
+                elif "session_resumption" not in config or "quota" in str(e).lower() or is_network_error(e):
+                    raise                                # quota/limits/no internet aren't about long sessions
                 else:
                     session = None
             if session is None:
                 bare = {k: v for k, v in config.items()
                         if k not in ("session_resumption", "context_window_compression")}
-                session = await stack.enter_async_context(client.aio.live.connect(model=vcfg["model"],
-                                                                                  config=bare))
+                session = await open_live(stack, client, vcfg["model"], bare)
                 config = bare                           # only now we know it was them: connect without from now on
                 LONG_SESSIONS["ok"] = False
                 print("  (this Gemini model doesn't take long-session support; continuing without it)")
@@ -1060,23 +1164,36 @@ async def converse(hub: Hub, vcfg: dict, client, conv_box: dict, first_press: bo
             hub.pet.conversation(True)
             if conv.holding:
                 hub.pet.set("listen")
-            if first_press:
+            if first_press and not hands_free:
                 print(f"  (mic: {getattr(audio, 'mic_name', '?')})")
-            print("\n🎙  " + ("hold " + vcfg["hotkey"] + " and talk" if conv.ptt else "listening…"))
+            print("\n🎙  " + ("hold " + vcfg["hotkey"] + " and talk" if conv.ptt else
+                              "listening… (say 'gracias' or stay quiet to hang up)" if hands_free else "listening…"))
             if conv.done.is_set():               # tapped and let go before we even connected
                 return
             await conv.run()
+    except Exception as e:
+        if not is_network_error(e):
+            raise                                # quota and real bugs: reported on the next press as before
+        log_error(hub, e)
+        beep("busy")
+        hub.pet.say("pakito", "📶 Couldn't reach Gemini. Internet OK?")
+        kept = conv.save_unanswered()            # a long turn (≥15 s) is kept and transcribed once you're back online
+        print("\n⚠ Couldn't reach Gemini after a few tries: check your internet (Wi-Fi, VPN). Hold the hotkey "
+              "again to retry" + ("." if kept else "; what you just said wasn't heard."))
     finally:
         conv.done.set()
         if mic:
             mic.cancel()
             await asyncio.gather(mic, return_exceptions=True)
         conv_box["conv"] = None
+        conv_box["hands_free"] = False
         hub.pet.conversation(False)
         audio.close()
         if connected and not conv_box.get("on_call"):    # no beep in your ear mid-call
             beep("close")
-            print("🔇 done\n› ", end="", flush=True)
+            w = getattr(hub, "wake", None)
+            print("🔇 done" + (f" · 👂 waiting for '{w.label}'" if w is not None and w.running else "") + "\n› ",
+                  end="", flush=True)
 
 
 def start_pet(cfg: dict) -> None:
@@ -1127,6 +1244,7 @@ async def main_async() -> None:
         print("Pakito ya está corriendo en otra ventana. Cierro esta para no duplicarlo.")
         return
     hub.blocker.start()
+    _race_addresses()
     client = genai.Client()  # reads GEMINI_API_KEY (gemini_key() exported it from config if needed)
     loop = asyncio.get_running_loop()
     events: asyncio.Queue[str] = asyncio.Queue()
@@ -1194,7 +1312,17 @@ async def main_async() -> None:
         print("  (Mac: to paste dictation and close blocked tabs, allow this terminal app in System Settings → "
               "Privacy & Security → Accessibility, then quit it fully (Cmd+Q) and reopen)")
 
-    box: dict = {"conv": None, "key_down": False, "on_call": bool(watcher and watcher.on_call)}
+    from .wake import TapIO, WakeWord
+    wake_cfg = vcfg.get("wake") or {}
+    wake = WakeWord(wake_cfg, lambda: loop.call_soon_threadsafe(events.put_nowait, "wake"),
+                    log=lambda m: print(m + "\n› ", end="", flush=True))
+    hub.wake = wake
+    if wake_cfg.get("enabled"):
+        r = wake.start()
+        print(f"  (hands-free: say '{wake.label}')" if "error" not in r else f"  (hands-free off: {r['error']})")
+    hands_vcfg = {**vcfg, "mode": "toggle", "idle_timeout_sec": wake.cfg["idle_sec"]}
+
+    box: dict = {"conv": None, "key_down": False, "on_call": bool(watcher and watcher.on_call), "hands_free": False}
     task: asyncio.Task | None = None
     created_by_this_press = False
     while True:
@@ -1211,7 +1339,26 @@ async def main_async() -> None:
             else:
                 asyncio.create_task(dictation.release())
             continue
+        if ev == "wake":
+            if task is not None and task.done():
+                if task.exception():
+                    print(f"\n⚠ voice error: {task.exception()!r}  (details in logs/errors.log)")
+                    log_error(hub, task.exception())
+                task = None
+            busy = box["on_call"] or task is not None
+            if busy:
+                wake.release()                   # already talking (or on a call): ignore it
+                continue
+            beep("on")
+            print(f"\n👂 {wake.label}")
+            box["hands_free"] = True
+            task = asyncio.create_task(converse(hub, hands_vcfg, client, box, first_press=False, audio=TapIO(wake)))
+            continue
         if ev in ("call_on", "call_off"):
+            if ev == "call_on":
+                wake.pause()
+            else:
+                wake.resume()
             box["on_call"] = ev == "call_on"
             hub.pet.on_call = box["on_call"]
             if box["on_call"]:
@@ -1240,6 +1387,10 @@ async def main_async() -> None:
                           f"Run `{run} check` to switch to a model that works.")
                 log_error(hub, task.exception())
             task, conv = None, None
+        if box.get("hands_free") and conv:       # a hands-free conversation: the hotkey just hangs up
+            if ev == "press":
+                conv.done.set()
+            continue
         if vcfg["mode"] != "ptt":                # toggle: press starts, next press hangs up
             if ev != "press":
                 continue

@@ -42,6 +42,10 @@ if /i "%1"=="keys" (
   "%PY%" -m assistant.voice keytest
   pause & exit /b
 )
+if /i "%1"=="pip" (
+  "%PY%" -m pip %2 %3 %4 %5 %6
+  pause & exit /b
+)
 if /i "%1"=="check" (
   "%PY%" -m assistant.check_live %2
   pause & exit /b

@@ -31,6 +31,13 @@ SYSTEM = (
     "line '---' and fuller detail (markdown OK) that goes to their notes. For school: help them organize and "
     "understand, don't do graded work for them."
 )
+VAULT_NOTE = (
+    " Their notes (an Obsidian vault) are at {vault}: you can read anything there. Before writing in it, read its "
+    "CLAUDE.md and follow it: add, never delete, move or reword their text; tag your own words %%ai%%. If a tool is "
+    "blocked, say in one short sentence which one and that they can tell Pakito to allow it."
+)
+NEVER_GRANT = ("Bash", "PowerShell")     # never allowed from voice (a shell can do anything); denied outright
+
 KEEP_JOBS = 40
 
 
@@ -70,11 +77,13 @@ def parse_output(out: str) -> dict:
     try:
         data = json.loads(out)
         if isinstance(data, dict):
-            return {"result": data.get("result") or "", "session_id": data.get("session_id"),
-                    "is_error": bool(data.get("is_error")), "actions": [], "blocked": []}
+            out = {"result": data.get("result") or "", "session_id": data.get("session_id"),
+                   "is_error": bool(data.get("is_error")), "actions": [], "blocked": [], "blocked_tools": []}
+            _denials(data, out)
+            return out
     except json.JSONDecodeError:
         pass
-    res = {"result": "", "session_id": None, "is_error": False, "actions": [], "blocked": []}
+    res = {"result": "", "session_id": None, "is_error": False, "actions": [], "blocked": [], "blocked_tools": []}
     for line in out.splitlines():
         try:
             ev = json.loads(line)
@@ -90,13 +99,41 @@ def parse_output(out: str) -> dict:
         elif ev.get("type") == "result":
             res["result"] = ev.get("result") or ""
             res["is_error"] = bool(ev.get("is_error"))
-            for d in ev.get("permission_denials") or []:         # what the reviewer / rules stopped
-                if isinstance(d, dict):
-                    b = _describe(d.get("tool_name", "?"), d.get("tool_input") or {})
-                    res["blocked"].append(f"{b['tool']}: {b['what']}")
+            _denials(ev, res)
     if not res["result"] and not res["actions"]:
         res["result"] = out
     return res
+
+
+def _denials(ev: dict, res: dict) -> None:
+    """What the permission rules stopped: readable lines + the raw tool names (for 'dale permiso')."""
+    for d in ev.get("permission_denials") or []:
+        if isinstance(d, dict):
+            b = _describe(d.get("tool_name", "?"), d.get("tool_input") or {})
+            res["blocked"].append(f"{b['tool']}: {b['what']}")
+            if d.get("tool_name") and d["tool_name"] not in res["blocked_tools"]:
+                res["blocked_tools"].append(d["tool_name"])
+
+
+def rule_path(p: str | Path) -> str:
+    """A folder as a Claude Code permission path: absolute = '//' + POSIX form (C:\\x\\y -> //c/x/y)."""
+    s = str(p).replace("\\", "/").rstrip("/")
+    if len(s) > 1 and s[1] == ":":
+        s = "/" + s[0].lower() + s[2:]
+    return "/" + s if s.startswith("/") else "//" + s
+
+
+def grant_rule(tool: str) -> str | None:
+    """The allow rule for a tool Claude was denied, or None if voice may never grant it. MCP tools are allowed
+    per server (mcp__claude_ai_Google_Calendar__list_events -> the whole Calendar connector)."""
+    if not tool or tool in NEVER_GRANT or tool.startswith(("Bash", "PowerShell")):
+        return None
+    if tool in ("Edit", "Write", "MultiEdit", "NotebookEdit"):
+        return None                                   # writes stay limited to the vault (already allowed)
+    if tool.startswith("mcp__"):
+        parts = tool.split("__")
+        return "__".join(parts[:2]) if len(parts) >= 3 else tool
+    return tool
 
 
 def _describe(name: str, inp: dict) -> dict:
@@ -114,9 +151,12 @@ def _describe(name: str, inp: dict) -> dict:
 class ClaudeBridge:
     def __init__(self, cfg: dict, data_dir: Path, notify: Callable[[str, str], None],
                  runner=default_runner, clock: Callable[[], float] = time.time, threaded: bool = True,
-                 who: str = "the user", about: str = "", local=lambda p: p):
+                 who: str = "the user", about: str = "", local=lambda p: p, vault: str | Path | None = None):
         self.cfg = cfg
+        self.vault = Path(vault) if vault else None
         self.system = SYSTEM.format(who=who, about=f" About them: {about.strip()}" if about and about.strip() else "")
+        if self.vault:
+            self.system += VAULT_NOTE.format(vault=self.vault)
         self.dir = Path(data_dir) / "Claude"
         self.work = local(Path(data_dir) / "state" / "claude_workspace")  # neutral cwd: no repo CLAUDE.md/hooks
         self.ledger = local(Path(data_dir) / "state" / "jobs.json")      # each computer runs its own jobs
@@ -127,6 +167,7 @@ class ClaudeBridge:
         self.jobs: dict[str, dict] = {}
         self.listeners: list[Callable[[dict], bool]] = []
         self.finishers: dict[str, Callable[[dict], None]] = {}    # kind -> extra step after a run (builds)
+        self.save_local = None                                     # writes config.local.json (the hub sets it)
         self._lock = threading.Lock()
         self._load()
 
@@ -179,7 +220,7 @@ class ClaudeBridge:
 
     def summary(self, job: dict) -> dict:
         keys = ("id", "kind", "status", "question", "project", "branch", "spoken", "review", "commits",
-                "files_changed", "blocked")
+                "files_changed", "blocked", "blocked_tools")
         out = {k: job.get(k) for k in keys if job.get(k) not in (None, "", [])}
         out["minutes"] = round(((job.get("finished") or self.clock()) - job.get("started", self.clock())) / 60, 1)
         if job.get("actions"):
@@ -210,9 +251,62 @@ class ClaudeBridge:
             cmd += ["--model", self.cfg["model"]]
         return cmd
 
+    def allow_rules(self) -> list[str]:
+        """What a question may use without asking (nobody is there to click 'allow'): the web, reading his notes,
+        writing inside his notes only, plus whatever he allowed by voice ('dale permiso')."""
+        rules = [t.strip() for t in str(self.cfg.get("allowed_tools", "WebSearch,WebFetch")).split(",") if t.strip()]
+        if self.vault and self.cfg.get("vault_access", True):
+            v = rule_path(self.vault)
+            rules += [f"Read({v}/**)", f"Edit({v}/**)"]      # Edit rules cover Write too; nothing outside the vault
+        rules += [r for r in self.cfg.get("granted", []) if grant_rule(r) == r]
+        return list(dict.fromkeys(rules))
+
+    def settings_file(self) -> Path:
+        """Permissions as a settings file, not --allowedTools: a folder with a space ('Second Brain') would be split
+        into two rules on the command line."""
+        perms = {"allow": self.allow_rules(), "deny": [f"{t}" for t in NEVER_GRANT]}
+        if self.vault and self.cfg.get("vault_access", True):
+            perms["additionalDirectories"] = [str(self.vault)]
+        self.work.mkdir(parents=True, exist_ok=True)
+        f = self.work / "pakito-permissions.json"
+        data = json.dumps({"permissions": perms}, ensure_ascii=False, indent=1)
+        try:
+            if not f.exists() or f.read_text(encoding="utf-8") != data:
+                f.write_text(data, encoding="utf-8")
+        except OSError:
+            pass
+        return f
+
     def _ask_flags(self) -> list[str]:
-        return ["--append-system-prompt", self.system, "--permission-mode", "dontAsk",
-                "--allowedTools", self.cfg.get("allowed_tools", "WebSearch,WebFetch")]
+        flags = ["--append-system-prompt", self.system, "--permission-mode", "dontAsk",
+                 "--settings", str(self.settings_file())]
+        if self.vault and self.cfg.get("vault_access", True):
+            flags += ["--add-dir", str(self.vault)]
+        return flags
+
+    def grant(self, job: dict) -> dict:
+        """He said 'dale permiso': allow what this job was denied (never a shell, never writes outside his notes),
+        remember it, and run the question again."""
+        tools = job.get("blocked_tools") or []
+        rules = [r for r in (grant_rule(t) for t in tools) if r]
+        refused = [t for t in tools if not grant_rule(t)]
+        if not rules:
+            return {"error": "Nothing I can allow there." + (f" Voice never allows: {', '.join(refused)}."
+                                                             if refused else " That job wasn't blocked.")}
+        granted = list(dict.fromkeys(list(self.cfg.get("granted", [])) + rules))
+        self.cfg["granted"] = granted
+        try:
+            if self.save_local is None:
+                from .setup_wizard import save_local as _save
+                self.save_local = _save
+            self.save_local({"claude": {"granted": granted}})
+        except Exception:
+            pass
+        keep = {"followup": job["followup"]} if job.get("followup") else {}
+        again = (self.follow_up_ask(job, "You now have permission for: " + ", ".join(rules) +
+                                    ". Continue the original request.", **keep) if job.get("session_id")
+                 else self.ask(job["question"], job.get("context"), **keep))
+        return {"allowed": rules, **({"never_allowed": refused} if refused else {}), "asked_again": again.get("job")}
 
     def command(self, question: str, context: str | None, image: str | None = None) -> list[str] | None:
         prompt = question if not context else f"{question}\n\nContext from the conversation: {context}"
@@ -222,28 +316,25 @@ class ClaudeBridge:
         cmd = self.base_cmd(prompt)
         if cmd is None:
             return None
-        flags = self._ask_flags()
-        if image:
-            i = flags.index("--allowedTools") + 1
-            flags[i] = flags[i] + ",Read"
-        return cmd + flags
+        return cmd + self._ask_flags()
 
-    def ask(self, question: str, context: str | None = None, image: Path | None = None) -> dict:
+    def ask(self, question: str, context: str | None = None, image: Path | None = None, **extra) -> dict:
         cmd = self.command(question, context, image=Path(image).name if image else None)
         if cmd is None:
             return {"error": "Claude Code isn't installed. In PowerShell: irm https://claude.ai/install.ps1 | iex, "
                              "then run `claude` once to log in."}
-        job = self.new_job("ask", question, **({"cleanup": str(image)} if image else {}))
+        job = self.new_job("ask", question, **({"cleanup": str(image)} if image else {}),
+                           **({"context": context[:2000]} if context else {}), **extra)
         self.work.mkdir(parents=True, exist_ok=True)
         self.start(job, cmd, self.work, int(self.cfg.get("timeout_sec", 180)))
         return {"asked": True, "job": job["id"], "note": "Claude is working on it; the answer comes back in ~10-60 s."}
 
-    def follow_up_ask(self, prev: dict, instruction: str) -> dict:
+    def follow_up_ask(self, prev: dict, instruction: str, **extra) -> dict:
         cmd = self.base_cmd(instruction)
         if cmd is None:
             return {"error": "Claude Code isn't installed."}
         cmd += self._ask_flags() + ["--resume", prev["session_id"]]
-        job = self.new_job("ask", instruction, follows=prev["id"])
+        job = self.new_job("ask", instruction, follows=prev["id"], **extra)
         self.work.mkdir(parents=True, exist_ok=True)
         self.start(job, cmd, self.work, int(self.cfg.get("timeout_sec", 180)))
         return {"asked": True, "job": job["id"], "continues": prev["id"]}
@@ -261,6 +352,7 @@ class ClaudeBridge:
                 job["actions"] = (job.get("actions") or []) + data["actions"]
             if data.get("blocked"):
                 job["blocked"] = (job.get("blocked") or []) + data["blocked"]
+                job["blocked_tools"] = list(dict.fromkeys((job.get("blocked_tools") or []) + data["blocked_tools"]))
             text = data["result"]
             if data["is_error"]:
                 code = code or 1
@@ -268,6 +360,10 @@ class ClaudeBridge:
                 raise RuntimeError((text or err or f"exit code {code}").strip()[:300])
             spoken, _, detail = text.partition("\n---")
             job.update(status="done", answer=text, spoken=spoken.strip(), detail=detail.strip())
+            allowable = [t for t in job.get("blocked_tools") or [] if grant_rule(t)]
+            if allowable:                                # he can fix it by voice: say how
+                job["spoken"] += (f" (Claude was blocked from: {', '.join(allowable)}. Say 'dale permiso' and "
+                                  "I'll allow it and ask again.)")
         except Exception as e:
             what = "the build" if job.get("kind") == "build" else "an answer"
             if is_login_error(str(e)):

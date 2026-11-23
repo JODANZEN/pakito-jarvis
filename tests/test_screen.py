@@ -92,12 +92,12 @@ def test_claude_gets_a_temporary_copy_that_is_deleted(hub, monkeypatch):
         prompt = cmd[cmd.index("-p") + 1]
         name = prompt.split("the file ")[1].split()[0]
         seen["exists_during"] = (cwd / name).exists()
-        seen["allowed"] = cmd[cmd.index("--allowedTools") + 1]
+        seen["settings"] = cmd[cmd.index("--settings") + 1]          # the screenshot sits in cwd: reads there are allowed
         return 0, json.dumps({"result": "It's the Lagrangian for a pendulum.\n---\nSteps...", "session_id": "s"}), ""
 
     hub.claude.runner, hub.claude.threaded = runner, False
     r = hub.call("look_at_screen", {"question": "explain this step by step", "claude": True})
-    assert r["claude"] and seen["exists_during"] and "Read" in seen["allowed"]
+    assert r["claude"] and seen["exists_during"] and seen["settings"].endswith("pakito-permissions.json")
     assert not list(hub.claude.work.glob("screen-*.jpg"))                     # gone after Claude finished
 
 

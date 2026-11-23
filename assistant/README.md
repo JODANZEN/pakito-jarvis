@@ -177,7 +177,56 @@ During a lock-in block, those sites show a 🔒 page with how long until your br
   - **"…en pakito"** / **"…en rabbit hole"** opens it inside that project folder (fuzzy match).
   - **"…donde lo dejé"** continues your last session there (`claude --continue`).
   - Change the folder with `"claude": {"projects_dir": "..."}`.
+  - **"…en el Second Brain"** works out of the box. Name other folders in `config.local.json`:
+    `"claude": {"folders": {"Ercilia Works": "C:\\Users\\you\\Documents\\Ercilia Works"}}`. A full path works too.
+  - **"…en la pantalla 2"** puts the terminal on that screen. It opens as a Windows Terminal tab when `wt` is installed.
 - Typed: `cc` or `cc pakito`.
+
+## Hands-free: "Hey Jarvis" instead of the hotkey
+Say the wake word and talk. Pakito answers, keeps listening for a follow-up, and hangs up when you say "gracias" or
+after 15 quiet seconds. Then it goes back to waiting for the word. The hotkey still works the whole time.
+- The wake word runs on your computer (openWakeWord). Nothing goes to Google until it hears it.
+- Setup, once: `run-pakito.bat pip install openwakeword`, restart Pakito, then say **"modo manos libres"** (or set
+  `"voice": {"wake": {"enabled": true}}`). **"Deja de escuchar"** turns it off.
+- **`run-pakito.bat check wake`** shows second by second how sure it is that it heard the word, to tune it.
+- Settings under `"voice": {"wake": {...}}`: `threshold` (0.5; higher = fewer false wake-ups, lower = hears you
+  more easily), `idle_sec` (15), `word` (`hey_jarvis`, or the path to your own trained `.onnx`, e.g. "Pakito").
+- With speakers it doesn't hear itself (the mic is ignored while it talks), so you can't interrupt it by voice.
+  With headphones, `"barge_in": true` lets you cut it off mid-sentence.
+- On a call it lets go of the mic, like the rest of Pakito.
+
+## Hand control with the webcam (experimental, Windows)
+Say **"activa las manos"** and a small camera window shows what Pakito sees. One hand, palm to the camera:
+- **☝ Point** (only the index finger up): moves the mouse like a trackpad. Make a fist or open your hand to rest:
+  nothing moves, and pointing again picks up from where the cursor is.
+- **🤏 Thumb + index pinch**: click. Hold the pinch about half a second to drag; open your fingers to drop.
+- **🤌 Thumb + middle pinch**: right click.
+- **✌ Two fingers up**, moving up or down: scroll.
+- **Other screen:** "mouse a la pantalla 2" makes the cursor jump there; the hand does the fine moves.
+- **Voice + hand:** pinch a text box, then "escribe esto aquí: …". Or point and say "click".
+- **"Quita las manos"** turns it off.
+
+Install once: `run-pakito.bat pip install mediapipe` (the hand model, ~8 MB, downloads the first time).
+If it doesn't start, `run-pakito.bat check hands` goes step by step (model, each camera, a live preview) and says
+which camera works; save it as `"hands": {"camera": 1, "backend": "msmf"}`. Settings under
+`"hands": {...}`: `speed` (2.2), `camera` (0), `preview` (true), `drag_hold_sec` (0.45), `hand` ("right": only
+that hand moves the mouse; "left" or "any"), `idle_off_sec` (120: turns itself off after 2 minutes without pointing
+or pinching). Arms get tired fast:
+it's for short bursts, not all day.
+
+## Windows and screens (Windows; the Mac is next)
+- **"Pon Spotify en la pantalla 2"**, **"VS Code a la izquierda"**, **"maximiza Claude"**, **"minimiza esto"**,
+  **"cámbiate a la terminal"**, **"cierra Spotify"**. Screen 1 is your main screen, then the others left to
+  right. To use Windows' own numbers (Settings → Display → Identify) instead: `"screen_numbers": "windows"`.
+- **"Cierra todas las de Chrome"** asks first. Closing is the polite kind: apps with unsaved work still ask to save.
+- **Layouts:** arrange your windows once, then say **"guarda esto como modo trabajo"**. Later, **"modo trabajo"** opens
+  whatever's missing and puts everything back. Layouts are saved in this computer's `config.local.json` (each
+  computer has its own screens). A routine can use one too: `- layout: modo trabajo`.
+- **Copy/paste between apps:** "copia esto", "pégalo en Claude", "pásale esto a Claude". Pakito never presses Enter
+  for you.
+- **"Para" / "cancela"** stops a layout halfway.
+- Plain Windows calls, no screenshots: instant and free. Agents (MCP) can't use any of this.
+- Your own names for apps: `"app_aliases": {"el editor": "code"}` (name → the program's .exe name).
 
 ## Pakito as an MCP server (other brains can use Pakito)
 Claude Code, the Claude desktop app and later Hermes can use Pakito's tools: add a task, start a focus block, check your stats, open things on your PC.
@@ -253,6 +302,24 @@ Version 1.1 asks for permission to read pages. It only reads one when you ask Pa
 - The logs keep that a tab was read, never its text or your tab titles.
 - Only the extension can talk to this part of Pakito; a web page can't pretend to be it.
 - Other agents using Pakito (Claude Code via MCP) don't get these tools.
+
+## Your tablet: "mira mi tablet"
+Solve a problem by hand in Samsung Notes, then:
+- **"Mira mi tablet"**: Pakito gets a screenshot of the tablet and acts as a tutor (where it goes wrong + a hint).
+- **"Mándaselo a ChatGPT"** / **"cópialo"**: the screenshot is copied; Ctrl+V in whatever conversation you're in.
+  **"Pégalo ahí"** also pastes it into the window in front. You press Enter. Either way it uses your ChatGPT/Claude
+  plan, not Pakito's.
+- Every screenshot is also saved in `Pictures\Pakito tablet\` (change it with `"tablet": {"folder": "..."}`).
+
+It works over adb (USB debugging), with the USB-C cable plugged in. One-time setup:
+1. Tablet: Settings → About tablet → Software information → tap **Build number** 7 times. Then Settings → Developer
+   options → **USB debugging** on.
+2. PC: PowerShell `winget install Google.PlatformTools`, then reopen the terminal.
+3. Plug in the cable, unlock the tablet, tap **Allow** on "Allow USB debugging?" (tick Always allow).
+4. `run-pakito.bat check tablet` should say "Tablet OK".
+
+Your PC can't use the tablet as a wireless screen (no Miracast). If you ever want that, Spacedesk works over the
+USB cable or Wi-Fi.
 
 ## "Mira esto": Pakito looks at your screen
 Ask about what's in front of you: "¿qué es esto?", "explícame esta ecuación", "what's this error". Pakito takes **one** screenshot and answers out loud.
@@ -332,6 +399,20 @@ Then say "ask Claude …", or Gemini decides to for hard questions. It runs in t
 - every answer is saved to `Assistant/Claude/<date>.md`.
 
 Typed: `claude <question>`. It counts against your Claude plan's usage, and it isn't available on the free claude.ai plan.
+
+**What Claude may touch:** the web, plus reading and writing your notes folder (it follows the vault's `CLAUDE.md`
+and never deletes). Nothing else on the PC, and never a shell. If Claude gets blocked from something (say Google
+Calendar), Pakito tells you; **"dale permiso"** allows it from then on (saved under `"claude": {"granted": [...]}`)
+and asks Claude again. `"claude": {"vault_access": false}` turns off the notes access.
+
+## Follow-ups: what you said you'd get to
+`Assistant/state/followups.json`. Things land there three ways:
+- a question to Claude that got blocked or failed;
+- **"luego le pido a Claude que…"** (Pakito saves it);
+- the daily dream reads your conversations and adds what you said you wanted done, with a short plan.
+
+Pakito brings one up every few hours. **"Pásaselo a Claude"** sends it with its plan, and it closes by itself once
+Claude finishes. **"¿Qué pendientes tengo?"** lists them; "ya lo hice" / "olvídalo" closes one.
 
 ## Tests
 `python -m pytest tests`: 231 tests. They use a fake clock and a fake Gemini session, so nothing launches and nothing hits the network.

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Start Pakito on a Mac: double-click it, or ./run-pakito.command [setup|text|spotify|calendar|check ...|keys]
+# Start Pakito on a Mac: double-click it, or ./run-pakito.command [setup|text|spotify|calendar|check ...|keys|pip ...]
 cd "$(dirname "$0")" || exit 1
 PY=.venv/bin/python
 if [ ! -x "$PY" ]; then echo "Run setup-pakito.command first."; read -r -p "Press Enter to close."; exit 1; fi
@@ -12,5 +12,6 @@ case "$1" in
   mcp)      "$PY" assistant/mcp_server.py register ;;
   keys)     "$PY" -m assistant.voice keytest ;;
   check)    shift; "$PY" -m assistant.check_live "$@" ;;
+  pip)      shift; "$PY" -m pip "$@" ;;
   *)        "$PY" -m assistant.voice ;;
 esac

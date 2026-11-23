@@ -18,7 +18,7 @@ import re
 from difflib import SequenceMatcher
 from pathlib import Path
 
-ACTION_KEYS = ("open", "app", "music", "search", "focus", "lockin", "book")
+ACTION_KEYS = ("open", "app", "music", "search", "focus", "lockin", "book", "layout")
 
 HEADER = """# Routines
 

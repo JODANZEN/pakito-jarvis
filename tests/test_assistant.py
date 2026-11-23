@@ -946,6 +946,7 @@ def test_backup_blocker_closes_the_tab_in_front(env):
     from assistant.blocker import Blocker
     hub, clock, _, notes = env
     closed = []
+    hub.focus.async_listeners = False                              # run the lock-in check inline (no thread race)
     win = {"t": ("Instagram - Opera", "opera.exe", 42)}
     b = Blocker(hub.focus, [], hub.notify, lister=lambda: set(), killer=lambda n: None,
                 sites=hub.cfg["focus"]["block_sites"], fg=lambda: win["t"], closer=closed.append, clock=clock)

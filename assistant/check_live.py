@@ -89,6 +89,23 @@ async def check_models(client) -> None:
     print(f"Using {working} → saved to {LOCAL.name}. Now: run-pakito.bat check full")
 
 
+async def check_use(client, name: str) -> None:
+    """Try one specific model with this key (e.g. the newer gemini-3.8-live); switch to it only if it answers."""
+    cfg = load_local()
+    current = (cfg.get("voice") or {}).get("model") or PREFERRED[0]
+    print(f"Trying {name} with your key (now using {current})…")
+    res = await timed(probe(client, name), 25)
+    if res != "OK":
+        print(f"❌ {name}: {res}\nStaying on {current}." + (
+            " (quota = your free tier doesn't include it yet, or today's limit is used up.)" if "quota" in res.lower()
+            or "429" in res else ""))
+        return
+    cfg.setdefault("voice", {})["model"] = name
+    save_local(cfg)
+    print(f"✅ {name} answered → saved. Now run `run-pakito.bat check full` to test Pakito's tools on it.\n"
+          f"To go back: run-pakito.bat check use {current}")
+
+
 async def check_full(client) -> None:
     from .config import load_config
     from .hub import Hub
@@ -395,6 +412,128 @@ async def check_notes(client, seconds: int = 30) -> None:
     print("That's exactly what a voice note would save (nothing went to your inbox).")
 
 
+def check_hands(seconds: int = 12) -> None:
+    """Hand control step by step, with timings: model, each camera + driver, then a live preview (no mouse moves)."""
+    import os
+    import time as _t
+    os.environ.setdefault("GLOG_minloglevel", "2")
+    os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
+    from .config import load_config
+    from .gestures import HAND_DEFAULTS, INSTALL, make_marker, open_camera, pose
+    hc = {**HAND_DEFAULTS, **(load_config().get("hands") or {})}
+
+    def step(label, fn):
+        t = _t.monotonic()
+        try:
+            out = fn()
+            print(f"  ✅ {label} ({_t.monotonic() - t:.1f} s)")
+            return out
+        except Exception as e:
+            print(f"  ❌ {label} ({_t.monotonic() - t:.1f} s): {type(e).__name__}: {e}")
+            return None
+
+    try:
+        import cv2
+        import mediapipe as mp
+        from mediapipe.tasks.python import BaseOptions, vision
+    except ImportError:
+        print(INSTALL)
+        return
+    print(f"MediaPipe {mp.__version__}, OpenCV {cv2.__version__}")
+    from .gestures import model_path, quiet_stderr
+    if not (Path.home() / ".pakito" / "models" / "hand_landmarker.task").exists():
+        step("downloading the hand model (~8 MB, once)", model_path)
+
+    def load():
+        with quiet_stderr():
+            return make_marker(vision, BaseOptions)
+    marker = step("hand model", load)
+    if marker is None:
+        return
+    print("Cameras:")
+    found = []
+    for idx in range(3):
+        cap, how = open_camera(cv2, idx, hc.get("backend"), log=lambda m: print("  " + m))
+        if cap is not None:
+            found.append((idx, how))
+            cap.release()
+    if not found:
+        print("❌ No camera gave a picture. Is another app (Zoom, Teams, OBS, the Camera app) using it?")
+        return
+    idx, how = next(((i, h) for i, h in found if i == int(hc["camera"])), found[0])
+    print(f"\nUsing camera {idx} via {how}. Live preview for {seconds} s: show your hand, point, pinch "
+          f"(the mouse won't move). Press Q to stop early.")
+    cap, how = open_camera(cv2, idx, how)
+    t0, frames, seen, gestures = _t.monotonic(), 0, 0, {}
+    while _t.monotonic() - t0 < seconds:
+        ok, frame = cap.read()
+        if not ok:
+            continue
+        frames += 1
+        frame = cv2.flip(frame, 1)
+        res = marker.detect_for_video(mp.Image(image_format=mp.ImageFormat.SRGB,
+                                               data=cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)),
+                                      int((_t.monotonic() - t0) * 1000))
+        label = "no hand"
+        if res.hand_landmarks:
+            seen += 1
+            p = pose([(q.x, q.y) for q in res.hand_landmarks[0]])
+            label = "pinch" if p["pinch"] < 0.30 else p["gesture"]
+            gestures[label] = gestures.get(label, 0) + 1
+            h, w = frame.shape[:2]
+            for q in res.hand_landmarks[0]:
+                cv2.circle(frame, (int(q.x * w), int(q.y * h)), 3, (80, 220, 120), -1)
+        cv2.putText(frame, label, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 255, 255), 2)
+        cv2.imshow("Pakito hands check", frame)
+        if cv2.waitKey(1) & 0xFF in (ord("q"), ord("Q")):
+            break
+    cap.release()
+    cv2.destroyAllWindows()
+    secs = max(_t.monotonic() - t0, 0.1)
+    print(f"\n{frames / secs:.0f} frames/s · hand seen in {100 * seen // max(frames, 1)}% · gestures: "
+          + (", ".join(f"{k} {v}" for k, v in sorted(gestures.items(), key=lambda kv: -kv[1])) or "none"))
+    if (idx, how) != (int(hc["camera"]), hc.get("backend")):
+        print(f'Tip: save it so Pakito opens it right away: "hands": {{"camera": {idx}, "backend": "{how}"}} '
+              "in config.local.json")
+
+
+def check_wake(seconds: int = 20) -> None:
+    """Listen for the wake word for a while and show how sure it is, second by second (to tune the threshold)."""
+    from .config import load_config
+    from .voice import MIC
+    from .wake import FRAME, INSTALL, WAKE_DEFAULTS, load_model, open_mic
+    cfg = load_config()
+    MIC["name"] = (cfg.get("voice") or {}).get("mic")
+    w = {**WAKE_DEFAULTS, **((cfg.get("voice") or {}).get("wake") or {})}
+    try:
+        import numpy as np
+        model, name = load_model(w["word"])
+    except ImportError:
+        print(INSTALL)
+        return
+    stream = open_mic()
+    print(f"Say '{name.replace('_', ' ')}' a few times, and talk normally in between ({seconds} s). "
+          f"Threshold now: {w['threshold']}.\n")
+    best_all, hits = 0.0, 0
+    for sec in range(seconds):
+        best = 0.0
+        for _ in range(12):                                # 12 x 80 ms ≈ 1 s
+            frame = stream.read(FRAME, exception_on_overflow=False)
+            best = max(best, float(model.predict(np.frombuffer(frame, dtype=np.int16)).get(name, 0.0)))
+        best_all = max(best_all, best)
+        mark = "  ← would wake" if best >= w["threshold"] else ""
+        hits += bool(mark)
+        print(f"  {sec + 1:2d}s  {'█' * int(best * 30):30s} {best:.2f}{mark}")
+    stream.stop_stream()
+    stream.close()
+    print(f"\nHighest: {best_all:.2f}. Seconds that would wake it: {hits}.")
+    if best_all < w["threshold"]:
+        print(f"It never reached {w['threshold']}: try closer to the mic, or lower it, e.g. "
+              f'"voice": {{"wake": {{"threshold": {max(0.2, round(best_all * 0.8, 2))}}}}} in config.local.json.')
+    else:
+        print("If it also woke while you were just talking, raise the threshold a little.")
+
+
 async def main() -> None:
     if len(sys.argv) > 1 and sys.argv[1] == "claude":
         check_claude()
@@ -407,6 +546,19 @@ async def main() -> None:
     if len(sys.argv) > 1 and sys.argv[1] == "dictation":
         await check_dictation(client)
         return
+    if len(sys.argv) > 1 and sys.argv[1] == "wake":
+        check_wake()
+        return
+    if len(sys.argv) > 1 and sys.argv[1] == "hands":
+        check_hands()
+        return
+    if len(sys.argv) > 1 and sys.argv[1] == "tablet":
+        from .config import load_config
+        from .tablet import Tablet
+        st = Tablet(load_config().get("tablet")).status()
+        print("Tablet OK: " + ", ".join(st["devices"]) + ". Try: 'Pakito, mira mi tablet'." if st["ok"]
+              else "Tablet not ready: " + st["error"])
+        return
     if len(sys.argv) > 1 and sys.argv[1] == "notes":
         await check_notes(client)
         return
@@ -415,6 +567,9 @@ async def main() -> None:
         return
     if len(sys.argv) > 1 and sys.argv[1] == "speed":
         await check_speed(client)
+        return
+    if len(sys.argv) > 1 and sys.argv[1] == "use":
+        await check_use(client, sys.argv[2] if len(sys.argv) > 2 else "gemini-3.8-live")
         return
     if len(sys.argv) > 1 and sys.argv[1] == "full":
         await check_full(client)

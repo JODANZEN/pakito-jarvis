@@ -8,6 +8,7 @@
 """
 from __future__ import annotations
 
+import threading
 import time
 from datetime import datetime
 import urllib.parse
@@ -26,7 +27,7 @@ from .util import (JsonlLog, StartApps, best_name_match, file_uri, launch_app_qu
 SEED_ROUTINES = """# Routines
 
 Pakito runs these when you say the name or an alias. Edit freely.
-Actions: `open: <url>` · `app: <name>` · `book: <name> [page]` · `music: <search>` · `search: <query>` ·
+Actions: `open: <url>` · `app: <name>` · `book: <name> [page]` · `music: <search>` · `search: <query>` · `layout: <name>` ·
 `focus: [minutes] <label>` · `lockin: on`
 (no minutes on `focus` = use the trainer's current level; `lockin: on` = blocked apps get closed until the break).
 Accepted suggestions get added at the bottom.
@@ -83,7 +84,7 @@ VERB = {"open_url": "opened", "open_app": "opened", "play_music": "music:", "web
 
 
 REDACT = {"type_text": {"text"},      # tool -> arg names (and result keys) whose content never goes in the logs
-          "read_tab": {"text"}, "browser_tabs": {"tabs"}}
+          "read_tab": {"text"}, "browser_tabs": {"tabs"}, "clipboard": {"text"}}
 
 
 def _target(name: str, args: dict) -> str:
@@ -165,9 +166,22 @@ class Hub:
                                  api_key=self.cfg.get("youtube_api_key"),
                                  spotify=self.spotify.sp if self.spotify else None)
         self.claude = ClaudeBridge(self.cfg["claude"], self.dir, self.notify, clock=clock, local=self.local,
-                                   who=user_name(self.cfg), about=(self.cfg.get("user") or {}).get("about", ""))
+                                   who=user_name(self.cfg), about=(self.cfg.get("user") or {}).get("about", ""),
+                                   vault=self.cfg.get("vault_path"))
+        from .setup_wizard import save_local as _save_local
+        self.save_local = (lambda updates: None) if launcher else _save_local   # tests never touch the real config
+        self.claude.save_local = self.save_local
+        self.cancel = threading.Event()                # "Pakito, para": layouts and other multi-step actions stop
+        from .windows import Desktop
+        self.desktop = Desktop(open_app=lambda name: self.call("open_app", {"name": name}, source="routine"),
+                               cancelled=self.cancel.is_set, aliases=self.cfg.get("app_aliases"),
+                               numbering=self.cfg.get("screen_numbers", "main_first"))
+        from .followups import FollowUps
+        self.followups = FollowUps(self.dir / "state" / "followups.json", clock)   # shared with the dream
+        self.claude.finishers["ask"] = self._claude_asked
         self.start_apps = StartApps()                 # installed apps, for "abre <anything>"
         self.open_terminal = open_terminal
+        self.launch_is_real = launcher is None
         from .builds import Builds
         launched_files = lambda paths: [self.launch(p) for p in paths]   # tests: record instead of opening
         from .calendar_feed import Calendar
@@ -205,6 +219,46 @@ class Hub:
         self.tools: dict[str, Tool] = {}
         self._register_builtins()
 
+    def _paste_keys(self) -> None:
+        import sys as _sys
+        if _sys.platform == "darwin":
+            from .macos import _osa
+            _osa('tell application "System Events" to keystroke "v" using command down')
+        else:
+            self.desktop.b.keys(0x11, 0x56)                    # Ctrl+V
+
+    def open_claude_terminal(self, args: list[str], folder: str, title: str) -> None:
+        """Windows Terminal tab in that folder, titled so Pakito can find it again; plain console otherwise."""
+        import shutil
+        import subprocess
+        import sys as _sys
+        wt = shutil.which("wt") if _sys.platform == "win32" else None
+        if wt and self.launch_is_real:
+            subprocess.Popen([wt, "-w", "0", "nt", "-d", folder, "--title", title, "--suppressApplicationTitle",
+                              *args])
+        else:
+            self.open_terminal(args, folder)
+
+    def _move_when_open(self, title: str, screen: float, tries: int = 20) -> None:
+        for _ in range(tries):
+            w = self.desktop.find(title)
+            if w:
+                self.desktop.place(w, self.desktop.screen(screen), "max")
+                return
+            time.sleep(0.4)
+
+    def _claude_asked(self, job: dict) -> None:
+        """A question to Claude that got blocked or failed becomes a follow-up, so it isn't forgotten."""
+        if job.get("followup"):
+            return                                    # already tracked: sync() reopens or closes it
+        from .claude_bridge import grant_rule
+        blocked = [t for t in job.get("blocked_tools") or [] if grant_rule(t)]
+        if job.get("status") == "error" or blocked:
+            why = (f"Claude was blocked from {', '.join(blocked)}: say 'dale permiso', then hand it to Claude again"
+                   if blocked else f"Claude failed: {str(job.get('answer', ''))[:120]}")
+            r = self.followups.add(job["question"][:200], plan=[why], source="claude", who="claude")
+            self.followups.mark_sent(r.get("added") or r.get("updated"), job["id"])
+
     # ---------- the pet ----------
     def _pet_reminder(self, r: dict) -> None:
         self.pet.say("pakito", ("⏰ " if r["kind"] == "due" else "❓ ") + r["what"][:200])
@@ -241,6 +295,8 @@ class Hub:
         args = {k: v for k, v in (args or {}).items() if v is not None}
         if source in ("voice", "typed"):
             self.presence.beat(used=True)            # you're on this computer: it's in charge now
+        elif "confirm" in args:
+            args.pop("confirm")                      # only he confirms risky actions, never an agent or a routine
         t0 = self.clock()
         tool = self.tools.get(name)
         if tool is None:
@@ -380,13 +436,170 @@ class Hub:
             self.launch(target)
             return {"opened": name, "target": target}
 
+        @self.tool("window", "His open windows. action: focus (switch to it), minimize, maximize, restore, close, move "
+                   "(to a screen and/or position), list. app = what he calls it ('vs code', 'spotify', 'la terminal', "
+                   "words from the title; omit = the window in front). screen = the number Windows gives it (1, 2, "
+                   "3): exactly the number he said. position = max (default), left, right, top, bottom, keep. all_matching for 'todas las de "
+                   "Chrome'. Closing several asks first: call again with confirm=true only after he says yes.",
+                   _obj({"action": S, "app": S, "screen": N, "position": S, "all_matching": B, "confirm": B},
+                        ["action"]))
+        def window(action: str, app: str | None = None, screen: float | None = None, position: str | None = None,
+                   all_matching: bool = False, confirm: bool = False):
+            self.cancel.clear()
+            return self.desktop.act(action, app, screen, position, all_matching, confirm)
+
+        @self.tool("layout", "Window layouts ('modo trabajo' = each app on its screen). action: apply (opens what's "
+                   "missing and arranges everything), save (remember how his windows are arranged right now under "
+                   "name), list, delete.", _obj({"action": S, "name": S}, ["action"]))
+        def layout(action: str, name: str | None = None):
+            layouts = self.cfg.setdefault("layouts", {})
+            a = (action or "").lower()
+            if a == "list":
+                return {"layouts": {k: v for k, v in layouts.items()}} if layouts else \
+                    {"layouts": {}, "note": "None yet: arrange the windows, then say 'guarda esto como modo trabajo'."}
+            if not name:
+                return {"error": "Which layout? Give it a name."}
+            key = best_name_match(name, list(layouts)) if layouts else None
+            if a == "save":
+                entries = self.desktop.capture()
+                if not entries:
+                    return {"error": "No windows to save."}
+                layouts[(key or name).lower()] = entries
+                self.save_local({"layouts": layouts})
+                return {"saved": (key or name).lower(), "apps": [f"{e['app']} → screen {e['screen']} ({e['position']})"
+                                                                for e in entries]}
+            if not key:
+                return {"error": f"No layout called '{name}'.", "layouts": list(layouts)}
+            if a == "delete":
+                layouts.pop(key)
+                self.save_local({"layouts": {key: None}})       # None removes it (save_local merges)
+                return {"deleted": key}
+            self.cancel.clear()
+            return {"layout": key, **self.desktop.apply(layouts[key])}
+
+        @self.tool("clipboard", "Copy and paste between apps. action: copy (copies what he has selected), paste (into "
+                   "app, or where the cursor is; text = what to paste, otherwise the clipboard), read (what's copied, "
+                   "e.g. 'pásale esto a Claude' = read, then ask_claude with it). Never presses Enter.",
+                   _obj({"action": S, "app": S, "text": S}, ["action"]))
+        def clipboard(action: str, app: str | None = None, text: str | None = None):
+            from . import dictation
+            a = (action or "").lower()
+            if a == "copy":
+                self.desktop.b.keys(0x11, 0x43)               # Ctrl+C in the window he's in
+                time.sleep(0.25)
+                got = dictation._clip_get() or ""
+                return {"copied": len(got)} if got else {"error": "Nothing got copied: is something selected?"}
+            if a == "read":
+                got = dictation._clip_get() or ""
+                return {"text": got[:6000], **({"cut": len(got)} if len(got) > 6000 else {})} if got else \
+                    {"error": "The clipboard is empty."}
+            if a == "paste":
+                if app:
+                    r = self.desktop.act("focus", app)
+                    if "error" in r:
+                        return r
+                    time.sleep(0.35)
+                if text:
+                    dictation.paste(text)
+                else:
+                    self.desktop.b.keys(0x11, 0x56)           # Ctrl+V
+                return {"pasted": True, **({"into": app} if app else {})}
+            return {"error": "action is copy, paste or read"}
+
+        self.hands = None                                # webcam hand control (gestures.py), made on first use
+
+        def _screen_width() -> int:
+            try:
+                return self.desktop.screen(1).w
+            except Exception:
+                return 1920
+
+        def _hands():
+            if self.hands is None:
+                from .gestures import HandControl
+                self.hands = HandControl(self.cfg.get("hands"), screen_px=_screen_width)
+            return self.hands
+
+        @self.tool("hand_control", "Webcam hand control (experimental): point with the index finger to move the mouse, "
+                   "pinch thumb+index to click (hold = drag), thumb+middle = right click, two fingers up/down = "
+                   "scroll, fist = pause. on=true/false ('activa las manos', 'quita el control con las manos'). "
+                   "preview = the small camera window.", _obj({"on": B, "preview": B}, ["on"]))
+        def hand_control(on: bool, preview: bool | None = None):
+            h = _hands()
+            if on:
+                return h.start(preview)
+            h.stop()
+            return {"hand_control": "off"}
+
+        @self.tool("mouse", "The mouse by voice: action screen (cursor jumps to the middle of that screen: 'mouse a la "
+                   "pantalla 2'), click, double_click, right_click, scroll_up, scroll_down. Pairs with hand control: "
+                   "he points, you click; or he pinches a text box and says 'escribe esto aquí' -> type_text.",
+                   _obj({"action": S, "screen": N}, ["action"]))
+        def mouse(action: str, screen: float | None = None):
+            try:
+                m = _hands().mouse
+            except RuntimeError as e:
+                return {"error": str(e)}
+            a = (action or "").lower()
+            if a == "screen":
+                sc = self.desktop.screen(screen or 1)
+                if sc is None:
+                    return {"error": f"There's no screen {screen}.", "screens": [x.n for x in self.desktop.screens()]}
+                m.goto(sc.x + sc.w // 2, sc.y + sc.h // 2)
+                return {"cursor_on_screen": sc.n}
+            if a in ("click", "double_click", "right_click"):
+                for _ in range(2 if a == "double_click" else 1):
+                    m.click("right" if a == "right_click" else "left")
+                return {"clicked": a}
+            if a in ("scroll_up", "scroll_down"):
+                m.scroll(5 if a == "scroll_up" else -5)
+                return {"scrolled": a}
+            return {"error": "action is screen, click, double_click, right_click, scroll_up or scroll_down"}
+
+        self.wake = None                                 # the wake word listener (voice.py sets it)
+
+        @self.tool("hands_free", "Hands-free mode: he says the wake word instead of holding the hotkey. on=true "
+                   "('modo manos libres', 'escúchame sin botón'), on=false ('deja de escuchar', 'apaga manos libres').",
+                   _obj({"on": B}, ["on"]))
+        def hands_free(on: bool):
+            w = self.wake
+            if w is None:
+                return {"error": "Hands-free only works while Pakito's voice is running."}
+            if on:
+                r = w.start()
+                if "error" in r:
+                    return r
+            else:
+                w.stop()
+            self.save_local({"voice": {"wake": {"enabled": bool(on)}}})
+            if not on:
+                return {"hands_free": False}
+            return {"hands_free": True, "wake_word": w.label,
+                    "note": f"The word only works once this conversation is over. Tell him in one sentence "
+                            f"(\"listo, cuelgo: di '{w.label}'\"), then call end_conversation."}
+
+        @self.tool("stop_actions", "Stop what Pakito is doing ('para', 'detente', 'stop', 'cancela'): a layout being "
+                   "arranged or any multi-step action.")
+        def stop_actions():
+            self.cancel.set()
+            return {"stopped": True}
+
         claude_cfg = self.cfg["claude"]
 
         def find_project(project: str | None):
-            """-> (folder, name) or (None, error dict). Fuzzy match in his repos folder."""
+            """-> (folder, name) or (None, error dict). His named folders first ('ercilia works', 'second brain'),
+            then a full path, then a fuzzy match in his repos folder."""
             root = _expand_home(claude_cfg.get("projects_dir") or "~")
             if not project:
                 return (root if root.is_dir() else _expand_home("~")), None
+            named = {k.lower(): v for k, v in (claude_cfg.get("folders") or {}).items()}
+            for alias in ("second brain", "vault", "mis notas", "notas", "brain"):
+                named.setdefault(alias, self.cfg["vault_path"])
+            key = best_name_match(project, list(named))
+            if key and _expand_home(named[key]).is_dir():
+                return _expand_home(named[key]), key
+            if _expand_home(project).is_dir() and ("/" in project or "\\" in project):
+                return _expand_home(project), _expand_home(project).name
             subs = [d.name for d in root.iterdir() if d.is_dir() and not d.name.startswith(".")] \
                 if root.is_dir() else []
             name = best_name_match(project, subs)
@@ -394,11 +607,12 @@ class Hub:
                 return None, {"error": f"No project like '{project}' in {root}.", "projects": subs[:15]}
             return root / name, name
 
-        @self.tool("open_claude_code", "Open a Claude Code session in a new terminal window (abre Claude Code / "
-                   "Claude en la terminal). project = a folder in his repos (pakito, rabbithole, sputnik...); "
-                   "omit for the repos folder. resume=true to continue the last session there (donde lo dejé).",
-                   _obj({"project": S, "resume": B}))
-        def open_claude_code(project: str | None = None, resume: bool = False):
+        @self.tool("open_claude_code", "Open a Claude Code session in a terminal (abre Claude Code / Claude en la "
+                   "terminal). project = a folder in his repos (pakito, rabbithole...), one of his named folders "
+                   "('second brain', or ones in config), or a full path; omit for the repos folder. resume=true to "
+                   "continue the last session there (donde lo dejé). screen = put the terminal on that screen.",
+                   _obj({"project": S, "resume": B, "screen": N}))
+        def open_claude_code(project: str | None = None, resume: bool = False, screen: float | None = None):
             from .claude_bridge import find_claude
             exe = find_claude(claude_cfg.get("path"))
             if not exe:
@@ -406,8 +620,13 @@ class Hub:
             folder, name = find_project(project)
             if folder is None:
                 return name
-            self.open_terminal([exe] + (["--continue"] if resume else []), str(folder))
-            return {"opened": "Claude Code", "folder": str(folder), "project": name, "resumed": resume}
+            title = f"Claude · {name or folder.name}"
+            args = [exe] + (["--continue"] if resume else [])
+            self.open_claude_terminal(args, str(folder), title)
+            if screen:
+                threading.Thread(target=self._move_when_open, args=(title, screen), daemon=True).start()
+            return {"opened": "Claude Code", "folder": str(folder), "project": name, "resumed": resume,
+                    **({"screen": int(screen)} if screen else {})}
 
         @self.tool("play_music", "Play music or a podcast on Spotify (pon música). Omit query for his default. "
                    "kind: playlist (default; his own playlists match first), track, artist, album, podcast. For a song "
@@ -658,6 +877,37 @@ class Hub:
                 out["claude"] = job.get("job") or job.get("error")
             return out
 
+        from .tablet import Tablet
+        self.tablet = Tablet(self.cfg.get("tablet"))
+
+        @self.tool("look_at_tablet", "Screenshot of his tablet (Galaxy Tab, handwritten work in Samsung Notes): 'mira "
+                   "mi tablet', 'take a look', 'revisa lo que hice'. send_to: pakito (default: you get the image and "
+                   "act as a tutor: where it goes wrong + a hint, never the full solution) or clipboard ('mándaselo "
+                   "a ChatGPT / a Claude', 'cópialo': saved and copied, he pastes it into his chat himself). "
+                   "paste=true only if he says to paste it into the window in front ('pégalo ahí').",
+                   _obj({"send_to": S, "paste": B}))
+        def look_at_tablet(send_to: str = "pakito", paste: bool = False):
+            shot = self.tablet.screenshot()
+            if "error" in shot:
+                return shot
+            from .tablet import clipboard_image, prepare, save_shot
+            pic = prepare(shot["png"])
+            dest = (send_to or "pakito").lower().strip()
+            if dest in ("pakito", "gemini", "you", "me") and not paste:
+                self.pending_image = pic["jpeg"]
+                return {"looking_at": "his tablet", "size": list(pic["size"]),
+                        "note": "The tablet screenshot is the image you just received. Tutor: say where it goes "
+                                "wrong and give a hint; don't hand over the full solution unless he asks."}
+            saved = save_shot(shot["png"], (self.cfg.get("tablet") or {}).get("folder"))
+            if not clipboard_image(pic["image"]):
+                return {"error": "Couldn't put the picture on the clipboard.", "saved": saved}
+            if paste:
+                time.sleep(0.15)
+                self._paste_keys()
+                return {"pasted": "tablet screenshot into the window in front", "saved": saved,
+                        "note": "He presses Enter."}
+            return {"copied": "tablet screenshot", "saved": saved, "note": "Tell him: Ctrl+V in his chat."}
+
         @self.tool("whats_coming", "His calendar (classes, work, study blocks, exams, projects). '¿Qué tengo hoy?' "
                    "-> when=today. '¿Qué viene esta semana?' -> days=7. 'What exams are coming?' -> big=true. "
                    "Canvas assignments only when he asks about them (assignments=true).",
@@ -774,6 +1024,51 @@ class Hub:
                    "Not for quick facts.", _obj({"question": S, "context": S}, ["question"]))
         def ask_claude(question: str, context: str | None = None):
             return self.claude.ask(question, context)
+
+        @self.tool("followups", "Things he said he'd get to later, so they don't get lost. action: list (default); "
+                   "add = he says he'll do something later or wants Claude to do it later ('luego le pido a Claude "
+                   "que…', 'después vemos lo del calendario'; put his words in what, a plan if you have one); do = "
+                   "hand it to Claude now with its plan ('sí, pásaselo a Claude'); done / drop = finished or not "
+                   "needed. item = id or a word from it. For things with a time use remember instead.",
+                   _obj({"action": S, "item": S, "what": S, "plan": S}))
+        def followups(action: str = "list", item: str | None = None, what: str | None = None,
+                      plan: str | None = None):
+            a = (action or "list").lower()
+            if a == "add":
+                return self.followups.add(what or item or "", said=what, plan=plan)
+            if a in ("done", "drop", "dropped"):
+                return self.followups.close(item, "done" if a == "done" else "dropped")
+            if a == "do":
+                f = self.followups.find(item)
+                if not f:
+                    return {"error": "No follow-up like that."}
+                self.followups.mark_sent(f["id"], "pending")
+                r = self.claude.ask(self.followups.question_for_claude(f), followup=f["id"])
+                if r.get("job"):
+                    self.followups.mark_sent(f["id"], r["job"])
+                return {**r, "followup": f["what"]}
+            live = self.followups.open(self.claude.jobs)
+            return {"followups": [self.followups.brief(i) for i in live]} if live else \
+                {"followups": [], "note": "Nothing pending."}
+
+        @self.tool("claude_allow", "He gives Claude permission for what it was blocked from ('dale permiso', 'sí, "
+                   "déjalo usar el calendario'). Only when he clearly says so. Allows it from now on and asks Claude "
+                   "again. Never allows a shell or writing outside his notes. job = id or a word; omit for the latest.",
+                   _obj({"job": S}))
+        def claude_allow(job: str | None = None):
+            j = self.claude.find(job) if job else next(
+                (x for x in sorted(self.claude.jobs.values(), key=lambda x: x.get("started", 0), reverse=True)
+                 if x.get("blocked_tools")), None)
+            if not j:
+                return {"error": "No Claude job was blocked."}
+            f = next((i for i in self.followups.load() if i.get("job") == j["id"]
+                      and i.get("status") in ("open", "sent")), None)
+            if f and not j.get("followup"):
+                j["followup"] = f["id"]                  # the retry carries the follow-up along
+            r = self.claude.grant(j)
+            if f and r.get("asked_again"):
+                self.followups.mark_sent(f["id"], r["asked_again"])
+            return r
 
         # ---- the slow brain: build jobs (see builds.py for the safety layers) ----
         def pick_build(job: str | None):
@@ -901,6 +1196,8 @@ class Hub:
                     parts = val.rsplit(maxsplit=1)
                     page = float(parts[1]) if len(parts) == 2 and parts[1].isdigit() else None
                     res = self.call("open_book", {"book": parts[0] if page else val, "page": page}, source="routine")
+                elif typ == "layout":
+                    res = self.call("layout", {"action": "apply", "name": val}, source="routine")
                 elif typ == "focus":
                     parts = val.split(maxsplit=1)
                     try:
