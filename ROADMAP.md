@@ -31,8 +31,9 @@ so they're only a fallback for apps we can't name.
 - Claude Code in any folder, not only repos ("abre Claude en Ercilia Works"): folder aliases + Windows Terminal.
 - Copy/paste between apps: "copia esto", "pégalo en Claude".
 
-**Phase 2: hands-free**: ✅ first version Nov 23 with the built-in "Hey Jarvis" word. Next: train "Pakito" on his
-own voice (openWakeWord's training notebook) and drop in the .onnx; echo cancellation if speakers + barge-in.
+**Phase 2: hands-free**: ✅ Nov 23 with "Hey Jarvis", then "Pakito" trained on his own voice (`run-pakito train`:
+5 min of recording, a small network on openWakeWord's speech features, trained locally). Later: echo
+cancellation if he wants speakers + interrupting it.
 - Local wake word "Pakito" (openWakeWord or livekit-wakeword; train on his own voice, tune the threshold).
   Nothing goes to Google until it hears its name.
 - Conversation stays open hands-free until "gracias Pakito" / silence; a ring buffer keeps the words right after

@@ -190,7 +190,23 @@ after 15 quiet seconds. Then it goes back to waiting for the word. The hotkey st
   `"voice": {"wake": {"enabled": true}}`). **"Deja de escuchar"** turns it off.
 - **`run-pakito.bat check wake`** shows second by second how sure it is that it heard the word, to tune it.
 - Settings under `"voice": {"wake": {...}}`: `threshold` (0.5; higher = fewer false wake-ups, lower = hears you
-  more easily), `idle_sec` (15), `word` (`hey_jarvis`, or the path to your own trained `.onnx`, e.g. "Pakito").
+  more easily), `idle_sec` (15), `word` (`hey_jarvis`, or your own trained model).
+
+### Train "Pakito" as the wake word
+`run-pakito.bat train` walks you through ~5 minutes of recording:
+1. 8 s of room noise.
+2. "Pakito" 30 times, mixed up (louder, softer, faster, farther away).
+3. Similar words and sentences ("poquito", "Paco vive en Pakistán"…), so it learns they're not Pakito.
+4. 90 s of talking normally, plus optionally 30 s of music or a video playing.
+
+It then trains in under a minute on this computer and switches Pakito to "Pakito". It's tuned to your voice and
+your room. The recordings stay in `~/.pakito/wake_data`, and the model is `~/.pakito/models/pakito.npz`.
+- **It misses you:** `run-pakito.bat train more` records another session and retrains on everything.
+- **It wakes on its own:** train more, with more talking; or raise `threshold` a little.
+- `run-pakito.bat train only` retrains from what's saved. To go back to "Hey Jarvis", set `"word": "hey_jarvis"`.
+- How it works: openWakeWord turns each 80 ms of audio into speech features; a small network trained on your
+  recordings looks at the last 1.28 s of them. In a simulated test it caught 9–10 of 10 "Pakito, pon música"
+  (also mid-sentence) with 0–1 false wake-ups in 94 s of tricky talk.
 - With speakers it doesn't hear itself (the mic is ignored while it talks), so you can't interrupt it by voice.
   With headphones, `"barge_in": true` lets you cut it off mid-sentence.
 - On a call it lets go of the mic, like the rest of Pakito.

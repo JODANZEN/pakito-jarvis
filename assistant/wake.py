@@ -23,7 +23,7 @@ RATE = 16000
 INSTALL = "Hands-free needs openWakeWord: run `run-pakito.bat pip install openwakeword`, then restart Pakito."
 WAKE_DEFAULTS = {
     "enabled": False,
-    "word": "hey_jarvis",            # a built-in model name, or the path to a trained .onnx ("pakito.onnx")
+    "word": "hey_jarvis",            # a built-in model name, or a trained model: ~/.pakito/models/pakito.npz
     "threshold": 0.5,                # higher = fewer false wake-ups, but it may miss you; `check wake` helps tune it
     "frames": 2,                     # this many 80 ms frames in a row above the threshold
     "idle_sec": 15,                  # a hands-free conversation hangs up after this much quiet
@@ -32,6 +32,10 @@ WAKE_DEFAULTS = {
 
 def load_model(word: str):
     """-> (model, name). Downloads the built-in models the first time (~6 MB from GitHub)."""
+    if word.endswith(".npz"):                          # trained on his voice (wake_train.py)
+        from .wake_train import PersonalModel
+        m = PersonalModel(os.path.expanduser(word))
+        return m, m.name
     from openwakeword.model import Model
     if word.endswith((".onnx", ".tflite")):
         path = os.path.expanduser(word)
