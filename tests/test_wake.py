@@ -161,3 +161,45 @@ def test_conversation_keeps_what_he_said_while_connecting(hub):
 def test_agents_cant_switch_hands_free():
     from assistant.server import AGENT_HIDDEN
     assert "hands_free" in AGENT_HIDDEN
+
+
+def test_video_is_paused_while_he_talks_and_resumed_after():
+    from assistant.media import MediaPauser, PAUSED, PLAYING
+
+    class Info:
+        def __init__(self, s):
+            self.playback_status = s
+
+    class Session:
+        def __init__(self, app, status):
+            self.source_app_user_model_id, self.status = app, status
+
+        def get_playback_info(self):
+            return Info(self.status)
+
+        async def try_pause_async(self):
+            self.status = PAUSED
+            return True
+
+        async def try_play_async(self):
+            self.status = PLAYING
+            return True
+    yt, spot = Session("opera.exe", PLAYING), Session("Spotify.exe", PAUSED)
+
+    async def sessions():
+        return [yt, spot]
+    m = MediaPauser(sessions=sessions)
+    paused = asyncio.run(m.pause_playing())
+    assert paused == ["opera.exe"] and yt.status == PAUSED and spot.status == PAUSED   # Spotify stays as it was
+    assert asyncio.run(m.resume(paused)) == ["opera.exe"] and yt.status == PLAYING
+    yt.status = PAUSED
+    spot.status = PLAYING                                # "pon música" started Spotify meanwhile
+    assert asyncio.run(m.resume(["opera.exe"])) == [] and yt.status == PAUSED
+
+
+def test_media_pauser_does_nothing_without_winrt():
+    from assistant.media import MediaPauser
+
+    async def broken():
+        raise ImportError("winrt")
+    assert asyncio.run(MediaPauser(sessions=broken).pause_playing()) == []

@@ -210,6 +210,9 @@ your room. The recordings stay in `~/.pakito/wake_data`, and the model is `~/.pa
 - With speakers it doesn't hear itself (the mic is ignored while it talks), so you can't interrupt it by voice.
   With headphones, `"barge_in": true` lets you cut it off mid-sentence.
 - On a call it lets go of the mic, like the rest of Pakito.
+- If a video or song is playing when it wakes up, Pakito pauses it while you talk and resumes it after (unless you
+  asked it to play something else). Off: `"pause_media": false`. Needs `winrt-Windows.Media.Control` (setup/update
+  installs it).
 
 ## Hand control with the webcam (experimental, Windows)
 Say **"activa las manos"** and a small camera window shows what Pakito sees. One hand, palm to the camera:
@@ -226,8 +229,8 @@ Install once: `run-pakito.bat pip install mediapipe` (the hand model, ~8 MB, dow
 If it doesn't start, `run-pakito.bat check hands` goes step by step (model, each camera, a live preview) and says
 which camera works; save it as `"hands": {"camera": 1, "backend": "msmf"}`. Settings under
 `"hands": {...}`: `speed` (2.2), `camera` (0), `preview` (true), `drag_hold_sec` (0.45), `hand` ("right": only
-that hand moves the mouse; "left" or "any"), `idle_off_sec` (120: turns itself off after 2 minutes without pointing
-or pinching). Arms get tired fast:
+that hand moves the mouse; "left" or "any"), `idle_off_sec` (120: turns itself off after 2 minutes without your hand
+in view). Arms get tired fast:
 it's for short bursts, not all day.
 
 ## Windows and screens (Windows; the Mac is next)

@@ -1312,7 +1312,9 @@ async def main_async() -> None:
         print("  (Mac: to paste dictation and close blocked tabs, allow this terminal app in System Settings → "
               "Privacy & Security → Accessibility, then quit it fully (Cmd+Q) and reopen)")
 
+    from .media import MediaPauser
     from .wake import TapIO, WakeWord
+    media = MediaPauser()
     wake_cfg = vcfg.get("wake") or {}
     wake = WakeWord(wake_cfg, lambda: loop.call_soon_threadsafe(events.put_nowait, "wake"),
                     log=lambda m: print(m + "\n› ", end="", flush=True))
@@ -1352,7 +1354,16 @@ async def main_async() -> None:
             beep("on")
             print(f"\n👂 {wake.label}")
             box["hands_free"] = True
-            task = asyncio.create_task(converse(hub, hands_vcfg, client, box, first_press=False, audio=TapIO(wake)))
+
+            async def hands_free_conversation():
+                # a video or song playing would sound like him talking: pause it, resume it after
+                paused = await media.pause_playing() if wake.cfg.get("pause_media", True) else []
+                try:
+                    await converse(hub, hands_vcfg, client, box, first_press=False, audio=TapIO(wake))
+                finally:
+                    if paused:
+                        await media.resume(paused)
+            task = asyncio.create_task(hands_free_conversation())
             continue
         if ev in ("call_on", "call_off"):
             if ev == "call_on":

@@ -216,6 +216,6 @@ def test_only_his_chosen_hand_drives_the_mouse():
     class C:
         def __init__(self, name):
             self.category_name = name
-    both = [[C("Left")], [C("Right")]]
-    assert pick_hand(both, "right") == 1 and pick_hand(both, "left") == 0 and pick_hand(both, "any") == 0
-    assert pick_hand([[C("Left")]], "right") is None and pick_hand([], "right") is None
+    both = [[C("Left")], [C("Right")]]                # on the mirrored picture, his right hand is labeled "Left"
+    assert pick_hand(both, "right") == 0 and pick_hand(both, "left") == 1 and pick_hand(both, "any") == 0
+    assert pick_hand([[C("Right")]], "right") is None and pick_hand([], "right") is None

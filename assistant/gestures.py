@@ -27,19 +27,20 @@ MODEL_URL = ("https://storage.googleapis.com/mediapipe-models/hand_landmarker/ha
 INSTALL = "Hand control needs MediaPipe: run `run-pakito.bat pip install mediapipe`, then restart Pakito."
 HAND_DEFAULTS = {"camera": 0, "speed": 2.2, "preview": True, "drag_hold_sec": 0.45,
                  "hand": "right",            # only this hand moves the mouse ("left", or "any")
-                 "idle_off_sec": 120}        # turns itself off after this long without pointing / pinching
+                 "idle_off_sec": 120}        # turns itself off after this long without his hand in view
 ACTIVE_STATES = {"pointing", "dragging", "scroll", "clicking"}
 
 
 def pick_hand(handedness: list, want: str) -> int | None:
-    """Which detected hand to follow. MediaPipe labels hands assuming a mirrored (selfie) picture, which is what we
-    feed it, so "Right" is his right hand."""
+    """Which detected hand to follow. We feed MediaPipe a mirrored picture, and on it MediaPipe calls his right hand
+    "Left" (Nov 24: "right" was following his left hand), so the label is swapped back here."""
     if not handedness:
         return None
     if want == "any":
         return 0
+    label = {"right": "left", "left": "right"}.get(want, want)
     for i, cats in enumerate(handedness):
-        if cats and str(getattr(cats[0], "category_name", "")).lower() == want:
+        if cats and str(getattr(cats[0], "category_name", "")).lower() == label:
             return i
     return None
 
@@ -394,10 +395,10 @@ class HandControl:
                     self.hand.update([(p.x, p.y) for p in res.hand_landmarks[i]], t)
                 else:
                     self.hand.lost()                             # no hand, or only the other one
-                if self.hand.state in ACTIVE_STATES:
-                    last_active = t
+                if i is not None:                                # his hand is in view: he's using it
+                    last_active = t                              # (Nov 24: counting only pointing turned it off mid-use)
                 elif t - last_active > float(self.cfg["idle_off_sec"]):
-                    self.log(f"\n🖐 No pointing for {int(self.cfg['idle_off_sec'] // 60) or 1} min: turning hand "
+                    self.log(f"\n🖐 No hand in view for {int(self.cfg['idle_off_sec'] // 60) or 1} min: turning hand "
                              "control off. ('activa las manos' turns it back on.)")
                     break
                 if self.cfg["preview"]:

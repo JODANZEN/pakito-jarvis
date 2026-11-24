@@ -8,3 +8,4 @@ ddgs>=9
 spotipy>=2.25
 Pillow>=10
 openwakeword>=0.6 ; sys_platform != "linux"     # hands-free wake word ("Hey Jarvis"); runs on this computer
+winrt-Windows.Media.Control>=3 ; sys_platform == "win32"   # pause a playing video while Pakito listens hands-free

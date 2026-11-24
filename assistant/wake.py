@@ -27,6 +27,7 @@ WAKE_DEFAULTS = {
     "threshold": 0.5,                # higher = fewer false wake-ups, but it may miss you; `check wake` helps tune it
     "frames": 2,                     # this many 80 ms frames in a row above the threshold
     "idle_sec": 15,                  # a hands-free conversation hangs up after this much quiet
+    "pause_media": True,             # pause a playing video/song while he talks, resume it after (media.py)
 }
 
 
