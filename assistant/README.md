@@ -55,6 +55,16 @@ when a friend who doesn't speak Spanish is around): **"Pakito, speak English"** 
 **"speak Bulgarian"**, or `"user": {"language": "English"}` in `config.local.json`. "Pakito, auto" goes back to
 following whoever talks. It's saved, so it sticks after a restart.
 
+When a language is set, Pakito also translates its own instructions into it once, in the background with a Gemini
+text model, because English instructions full of Spanish examples kept pulling it into Spanish:
+- It always translates from the original (the master copy in `voice.py`), never from an earlier translation, so the
+  meaning can't drift. When the original changes, the translation is redone.
+- Only the fixed instructions get translated. Your tasks, notes, the time etc. are filled in afterwards as they are.
+  Your own example commands in quotes ("mira esto") stay as you say them.
+- Every translation is checked: all the slots and tool names must survive and the length must stay close.
+  Otherwise Pakito keeps using the original plus the "always speak X" rule.
+- Saved in `~/.pakito/prompts/<Language>.json`, together with the original it came from, so you can compare them.
+
 ## Commands
 
 | Type | Does |

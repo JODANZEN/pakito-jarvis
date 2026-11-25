@@ -219,6 +219,14 @@ class Hub:
         self.tools: dict[str, Tool] = {}
         self._register_builtins()
 
+    def prepare_prompt(self, lang: str) -> None:
+        """Have Pakito's instructions translated into `lang` (prompt_lang.py), off the voice loop."""
+        if not self.launch_is_real:
+            return                                         # tests: no network
+        from .prompt_lang import prepare
+        from .voice import PROMPT_TEMPLATE
+        prepare(lang, PROMPT_TEMPLATE, log=lambda m: print("\n" + m + "\n› ", end="", flush=True))
+
     def _paste_keys(self) -> None:
         import sys as _sys
         if _sys.platform == "darwin":
@@ -565,6 +573,8 @@ class Hub:
             value = "auto" if auto else lang[:1].upper() + lang[1:]
             self.cfg.setdefault("user", {})["language"] = value
             self.save_local({"user": {"language": value}})
+            if not auto:
+                self.prepare_prompt(value)               # translate the instructions in the background
             return {"language": value, "note": "From now on answer only in that language." if not auto else
                     "From now on answer in whatever language they speak to you."}
 
