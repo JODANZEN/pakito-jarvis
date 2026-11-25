@@ -80,14 +80,27 @@ def log_error(hub: Hub, exc: BaseException) -> None:
         pass
 
 
+def base_language(cfg: dict) -> str | None:
+    """The language Pakito always speaks ("English"), or None = follow whoever is talking."""
+    lang = str((cfg.get("user") or {}).get("language") or "").strip()
+    return None if lang.lower() in ("", "auto", "automatic", "any") else lang
+
+
 def language_line(cfg: dict) -> str:
-    """Which language to answer in: the one they're speaking right now (Pakito isn't only for Spanish)."""
+    """Which language to answer in. Nov 24: with his Bulgarian friend, Pakito kept drifting into Spanish (his notes
+    and this prompt's examples are in Spanish), so a base language, when set, wins over everything."""
     u = cfg.get("user") or {}
     langs = [l.strip() for l in (u.get("languages") or []) if str(l).strip()]
     pron = (u.get("pronouns") or "").strip()
-    line = ("Answer in the language they're speaking to you right now" +
-            (f" (they speak {', '.join(langs[:-1]) + ' and ' + langs[-1] if len(langs) > 1 else langs[0]})"
-             if langs else "") + ", and switch when they switch. Never default to Spanish or English on your own.")
+    base = base_language(cfg)
+    if base:
+        line = (f"LANGUAGE: always speak {base}. Answer in {base} even if someone talks to you in another language, "
+                f"even though his notes and the examples in this prompt are in Spanish. Switch only when he asks "
+                f"you to (\"habla en español\", \"speak Bulgarian\"): then call set_language.")
+    else:
+        line = ("Answer in the language they're speaking to you right now" +
+                (f" (they speak {', '.join(langs[:-1]) + ' and ' + langs[-1] if len(langs) > 1 else langs[0]})"
+                 if langs else "") + ", and switch when they switch. Never default to Spanish or English on your own.")
     if pron:
         line += f" Refer to them as {pron} (this prompt says 'he' only out of habit)."
     return line
@@ -155,6 +168,8 @@ def system_prompt(hub: Hub, vcfg: dict) -> str:
         claude_txt += ("\nFrom last night's dream (Claude processed his logs while he slept). After handling what he "
                        "asked, tell him this once, in one short sentence, in the language he's using: " + dream[:300])
     where = f" They're in {vcfg['location']} unless they say otherwise." if vcfg.get("location") else ""
+    base = base_language(hub.cfg)
+    lang_end = f"\n\nRemember: speak {base}." if base else ""
     return f"""You are Pakito, the voice assistant on the Windows PC of {user_line(hub.cfg)}.
 Now: {now_line()}.{where}
 The time and date: read them from "Now" (this computer's clock, already in his time zone; don't convert it to
@@ -221,7 +236,7 @@ How to act:
 - When he's done talking to you, call end_conversation.
 
 Done recently (oldest first):
-{recent_txt}{claude_txt}{coming_txt}"""
+{recent_txt}{claude_txt}{coming_txt}{lang_end}"""
 
 
 LONG_SESSIONS = {"ok": True}      # turned off for this run if the model rejects compression/resumption

@@ -177,9 +177,12 @@ class Wizard:
                        u.get("about"))
         city = self.q("Your city, for weather and \"near me\" (e.g. Tempe, AZ)", (self.cfg.get("voice") or {}).get("location"))
         langs = self.q("Languages you'll talk to Pakito in (e.g. English, Bulgarian)", ", ".join(u.get("languages") or []))
+        base = self.q("Language Pakito should always speak (e.g. English; auto = whatever you speak to it)",
+                      u.get("language") or "auto")
         pron = self.q("How Pakito should refer to you (he / she / they; Enter to skip)", u.get("pronouns"))
         self.save({"user": {"name": name or None, "about": about,
-                            "languages": [l.strip() for l in langs.split(",") if l.strip()], "pronouns": pron},
+                            "languages": [l.strip() for l in langs.split(",") if l.strip()], "pronouns": pron,
+                            "language": base or "auto"},
                    "voice": {"location": city or None}})
 
     # 2

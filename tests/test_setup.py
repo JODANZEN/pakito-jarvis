@@ -78,7 +78,7 @@ def test_mask_never_shows_the_key():
 
 def test_wizard_you_and_gemini_steps(tmp_path):
     p = tmp_path / "config.local.json"
-    answers = iter(["Ana", "She studies biology.", "Lima, Peru", "Bulgarian, English", "she/her",   # you
+    answers = iter(["Ana", "She studies biology.", "Lima, Peru", "Bulgarian, English", "English", "she/her",   # you
                     "bad-key", "good-key"])                            # gemini: retry after a bad key
     said = []
     w = sw.Wizard(ask=lambda q: next(answers), say=said.append, local=p,
@@ -92,7 +92,7 @@ def test_wizard_you_and_gemini_steps(tmp_path):
     cfg = json.loads(p.read_text())
     assert cfg["voice"]["model"] == "gemini-3.1-flash-live-preview"     # picked a model this key can use
     assert cfg["user"] == {"name": "Ana", "about": "She studies biology.", "languages": ["Bulgarian", "English"],
-                           "pronouns": "she/her"}
+                           "pronouns": "she/her", "language": "English"}
     assert cfg["voice"]["location"] == "Lima, Peru" and cfg["gemini_api_key"] == "good-key"
     assert any("didn't work" in s for s in said)
     assert not any("good-key" in s for s in said)                     # never echoes the key
@@ -192,3 +192,27 @@ def test_check_all_lists_what_works(monkeypatch, tmp_path):
     marks = {what: mark for mark, what, _ in rows}
     assert marks["Gemini key"] == "⚠" and marks["Notes folder"] == "✅" and marks["Tablet"] == "➖"
     assert any("to fix above" in line for line in out)
+
+
+def test_base_language_wins_over_spanish_notes():
+    """Nov 24: with his Bulgarian friend Pakito drifted into Spanish."""
+    from assistant.voice import base_language, language_line
+    cfg = {"user": {"languages": ["English", "Spanish"], "language": "English"}}
+    line = language_line(cfg)
+    assert base_language(cfg) == "English" and "always speak English" in line and "set_language" in line
+    assert base_language({"user": {"language": "auto"}}) is None
+    assert "switch when they switch" in language_line({"user": {"language": "auto"}})
+
+
+def test_set_language_by_voice(tmp_path):
+    import copy
+    from assistant.config import DEFAULTS
+    from assistant.hub import Hub
+    cfg = copy.deepcopy(DEFAULTS)
+    cfg["vault_path"] = str(tmp_path)
+    hub = Hub(cfg, launcher=lambda x: None, notifier=lambda *a: None)
+    saved = {}
+    hub.save_local = lambda u: saved.update(u)
+    assert hub.call("set_language", {"language": "english"}, "voice")["language"] == "English"
+    assert saved == {"user": {"language": "English"}} and hub.cfg["user"]["language"] == "English"
+    assert hub.call("set_language", {"language": "auto"}, "voice")["language"] == "auto"

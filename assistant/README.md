@@ -49,6 +49,12 @@ Second Brain is a separate scheduled Claude task, not part of Pakito.
 **Text-only mode** (no voice, typed commands): `run-pakito.bat text`. **Free hotkey for it:** Windows Terminal "quake
 mode" (Win + `).
 
+## Language
+By default Pakito answers in whatever language it's spoken to. To make it always speak one language (say English,
+when a friend who doesn't speak Spanish is around): **"Pakito, speak English"** / **"háblame en español"** /
+**"speak Bulgarian"**, or `"user": {"language": "English"}` in `config.local.json`. "Pakito, auto" goes back to
+following whoever talks. It's saved, so it sticks after a restart.
+
 ## Commands
 
 | Type | Does |

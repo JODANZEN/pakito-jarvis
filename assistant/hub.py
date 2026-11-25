@@ -556,6 +556,18 @@ class Hub:
                 return {"scrolled": a}
             return {"error": "action is screen, click, double_click, right_click, scroll_up or scroll_down"}
 
+        @self.tool("set_language", "Change the language Pakito speaks ('háblame en inglés', 'speak Bulgarian', 'habla "
+                   "en español'). language = the language name in English ('English', 'Spanish', 'Bulgarian'), or "
+                   "'auto' to follow whoever is talking. Saved for next time too.", _obj({"language": S}, ["language"]))
+        def set_language(language: str):
+            lang = (language or "").strip()
+            auto = lang.lower() in ("", "auto", "automatic", "any")
+            value = "auto" if auto else lang[:1].upper() + lang[1:]
+            self.cfg.setdefault("user", {})["language"] = value
+            self.save_local({"user": {"language": value}})
+            return {"language": value, "note": "From now on answer only in that language." if not auto else
+                    "From now on answer in whatever language they speak to you."}
+
         self.wake = None                                 # the wake word listener (voice.py sets it)
 
         @self.tool("hands_free", "Hands-free mode: he says the wake word instead of holding the hotkey. on=true "
